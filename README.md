@@ -67,10 +67,10 @@ dataset_dir/
 | Manifest | From |
 |---|---|
 | `geometry` `[lon, lat, alt]` | EXIF GPS latitude / longitude; altitude per `--altitude`. `null` without a fix (DJI 0/0 counts as none) |
-| `yaw`, `pitch`, `roll` | DJI XMP `GimbalYawDegree` / `GimbalPitchDegree` / `GimbalRollDegree` (camera, not airframe) |
+| `yaw`, `pitch`, `roll` | DJI XMP `GimbalYawDegree` / `GimbalPitchDegree` / `GimbalRollDegree` (camera, not airframe); Autel writes the same block |
 | `time_utc` | EXIF `DateTimeOriginal` + `--timezone` |
 | `cameras` | EXIF make, model, focal length, image size; sensor width from a small table, else from the 35 mm equivalent focal length |
-| `h_acc_m`, `v_acc_m` | not written: consumer DJI images carry no accuracy, so the pipeline default applies |
+| `h_acc_m`, `v_acc_m` | RTK models (Phantom 4 RTK, EVO II RTK): XMP `RtkStdLat` / `RtkStdLon` (the larger), and `RtkStdHgt` with `--altitude absolute` only. Consumer images carry none, so the pipeline default applies |
 
 Video, one feature per frame (`frame_index`, presentation order as a decoder outputs them):
 
@@ -90,6 +90,8 @@ Notes:
 - **Orientation** is written as `ned_yaw_pitch_roll_deg`: yaw clockwise from north, pitch 0 = horizontal and
   −90 = nadir, roll positive right side down, all in degrees. This is the convention proposed in the design
   notes, and DJI gimbal angles already follow it.
+- **RTK accuracy** is what the receiver reports for its fix. It leaves out camera timing and the antenna to camera
+  offset, so it can be optimistic; georef says so when its residuals are much larger (σ0 ≫ 1).
 - **Sensor width** derived from the 35 mm equivalent is wrong for cropped modes (e.g. 16:9 on a 4:3 sensor),
   which is why known models are looked up first. DJI video is usually such a crop, and the SRT does not name the
   model: pass `--focal-length-mm` and `--sensor-width-mm` when you know them; bundle adjustment refines the rest.
@@ -106,7 +108,7 @@ Notes:
 
 Tests and examples use the **Brighton Beach** dataset from OpenDroneMap,
 <https://github.com/OpenDroneMap/drone_dataset_brighton_beach>: 18 images from a DJI Phantom 3 (FC300S),
-Copyright (c) 2017 Piero Toffanin, BSD 2-Clause License. The data is not committed: fetch it with `make data`
+Copyright (c) 2017 Piero Toffanin, BSD 2-Clause License. The data is not committed: fetch it with `make download-data`
 from the photogrammetry repository root, then prepare it (the dataset's `LICENSE` travels with it):
 
 ```
@@ -123,9 +125,24 @@ uv run photogram-data-prep video ../../data/drone_dataset_dji_video/DJI_0317.MP4
     --timezone Europe/Rome
 ```
 
+The RTK tests use the **Helenenschacht** survey from OpenDroneMap,
+<https://github.com/OpenDroneMap/odm_data_helenenschacht>: 176 nadir images (5472x3648) from an Autel EVO II Pro RTK
+with RTK accuracies, GCPs and the RINEX / MRK files, flown in Burgenland, Austria. Data by Daniel Dobosi, contributed
+through the [OpenDroneMap community forum](https://community.opendronemap.org/t/gcp-projected-coordinates/11762/7),
+GNU General Public License v3. It is 2.5 GB, so it has its own target, `make download-helenenschacht`. Its heights
+are ellipsoidal (EXIF `GPSAltitude` matches the MRK `Ellh`) and the camera clock is local time (CEST):
+
+```
+uv run photogram-data-prep images ../../data/odm_data_helenenschacht/images -o ../../data/helenenschacht \
+    --altitude absolute --vertical-datum ellipsoid --timezone Europe/Vienna \
+    --attribution ../../data/odm_data_helenenschacht/README.md --attribution ../../data/odm_data_helenenschacht/LICENSE
+```
+
+The GCPs and the RINEX / MRK files are not read yet.
+
 ## Development
 
 `uv sync` at the root installs it. In this directory: `uv run pytest`, `uv run ruff check src tests`, `uv run ty check src tests`.
 Ruff settings come from the photogrammetry root `ruff.toml`; copy it when the package moves out. The Brighton
-Beach and DJI video tests are skipped when `../../data` has no copy of the dataset; tests that make a video
+Beach, DJI video and Helenenschacht tests are skipped when `../../data` has no copy of the dataset; tests that make a video
 are skipped without FFmpeg.

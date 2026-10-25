@@ -75,6 +75,56 @@ def test_zero_zero_is_no_fix(tmp_path: Path, make_jpeg: MakeJpeg) -> None:
     assert result.located == 0
 
 
+def test_reads_autel_xmp(tmp_path: Path, make_jpeg: MakeJpeg) -> None:
+    make_jpeg(
+        tmp_path / "images" / "MAX_0002.JPG",
+        make="Autel Robotics\x00\x00",
+        model="XT705\x00\x00",
+        focal_length=10.57,
+        relative_altitude=49.98,
+        yaw=-149.39,
+        xmp_prefix="drone",
+    )
+
+    prepare_images(tmp_path / "images", tmp_path / "dataset")
+
+    manifest = load(tmp_path / "dataset")
+    properties = manifest["features"][0]["properties"]
+    assert manifest["features"][0]["geometry"]["coordinates"][2] == pytest.approx(49.98)
+    assert (properties["yaw"], properties["pitch"]) == (-149.39, -89.9)
+    camera = manifest["photogrammetry"]["cameras"]["autel_robotics_xt705_64x36_10.57mm"]
+    assert camera["sensor_width_mm"] == pytest.approx(13.2)
+
+
+def test_rtk_accuracy(tmp_path: Path, make_jpeg: MakeJpeg) -> None:
+    make_jpeg(tmp_path / "images" / "a.jpg", rtk_std=(0.0144, 0.0137, 0.0297))
+
+    prepare_images(tmp_path / "images", tmp_path / "relative")
+    prepare_images(
+        tmp_path / "images",
+        tmp_path / "absolute",
+        altitude=AltitudeMode.ABSOLUTE,
+        vertical_datum=VerticalDatum.ELLIPSOID,
+    )
+
+    relative = load(tmp_path / "relative")["features"][0]["properties"]
+    absolute = load(tmp_path / "absolute")["features"][0]["properties"]
+    assert relative["h_acc_m"] == pytest.approx(0.0144)
+    # The RTK height accuracy says nothing about the barometric height.
+    assert "v_acc_m" not in relative
+    assert (absolute["h_acc_m"], absolute["v_acc_m"]) == (pytest.approx(0.0144), pytest.approx(0.0297))
+
+
+def test_no_rtk_accuracy_without_a_fix(tmp_path: Path, make_jpeg: MakeJpeg) -> None:
+    make_jpeg(tmp_path / "images" / "a.jpg", lat=None, rtk_std=(0.0144, 0.0137, 0.0297))
+    make_jpeg(tmp_path / "images" / "b.jpg", rtk_std=(0.0, 0.0, 0.0))
+
+    prepare_images(tmp_path / "images", tmp_path / "dataset")
+
+    for feature in load(tmp_path / "dataset")["features"]:
+        assert "h_acc_m" not in feature["properties"]
+
+
 def test_absolute_altitude_with_datum(tmp_path: Path, source: Path) -> None:
     dataset = tmp_path / "dataset"
 

@@ -10,9 +10,9 @@ type MakeJpeg = Callable[..., Path]
 
 DJI_XMP = (
     '<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">'
-    '<rdf:Description rdf:about="DJI Meta Data" xmlns:drone-dji="http://www.dji.com/drone-dji/1.0/"'
-    ' drone-dji:AbsoluteAltitude="+{absolute}" drone-dji:RelativeAltitude="+{relative}"'
-    ' drone-dji:GimbalRollDegree="+0.00" drone-dji:GimbalYawDegree="{yaw:+.2f}" drone-dji:GimbalPitchDegree="-89.90">'
+    '<rdf:Description rdf:about="DJI Meta Data" xmlns:{p}="http://www.dji.com/drone-dji/1.0/"'
+    ' {p}:AbsoluteAltitude="+{absolute}" {p}:RelativeAltitude="+{relative}"'
+    ' {p}:GimbalRollDegree="+0.00" {p}:GimbalYawDegree="{yaw:+.2f}" {p}:GimbalPitchDegree="-89.90"{rtk}>'
     "</rdf:Description></rdf:RDF></x:xmpmeta>"
 )
 
@@ -25,7 +25,10 @@ def _dms(value: float) -> tuple[float, float, float]:
 
 @pytest.fixture
 def make_jpeg() -> MakeJpeg:
-    """Return a function that writes a tiny JPEG with drone-like metadata. lat=None writes no GPS."""
+    """Return a function that writes a tiny JPEG with drone-like metadata. lat=None writes no GPS.
+
+    xmp_prefix="drone" writes the XMP as Autel does; rtk_std=(lat, lon, height) adds the RTK accuracies.
+    """
 
     def make(
         path: Path,
@@ -39,6 +42,8 @@ def make_jpeg() -> MakeJpeg:
         model: str = "FC300S\x00\x00",
         focal_length: float = 3.61,
         size: tuple[int, int] = (64, 36),
+        xmp_prefix: str = "drone-dji",
+        rtk_std: tuple[float, float, float] | None = None,
     ) -> Path:
         exif = Image.Exif()
         exif[ExifTags.Base.Make] = make
@@ -57,7 +62,15 @@ def make_jpeg() -> MakeJpeg:
             gps[ExifTags.GPS.GPSAltitude] = gps_altitude
         xmp = b""
         if relative_altitude is not None:
-            xmp = DJI_XMP.format(absolute=gps_altitude, relative=relative_altitude, yaw=yaw).encode()
+            rtk = ""
+            if rtk_std is not None:
+                rtk = "".join(
+                    f' {xmp_prefix}:{tag}="{value:.5f}"'
+                    for tag, value in zip(("RtkStdLat", "RtkStdLon", "RtkStdHgt"), rtk_std, strict=True)
+                )
+            xmp = DJI_XMP.format(
+                p=xmp_prefix, absolute=gps_altitude, relative=relative_altitude, yaw=yaw, rtk=rtk
+            ).encode()
         path.parent.mkdir(parents=True, exist_ok=True)
         Image.new("RGB", size, (90, 120, 60)).save(path, exif=exif, xmp=xmp)
         return path

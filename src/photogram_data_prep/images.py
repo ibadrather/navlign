@@ -1,6 +1,6 @@
 """Prepare a dataset (manifest.geojson + images/) from a directory of geotagged JPEG images.
 
-Position comes from EXIF GPS, camera attitude from the XMP block DJI cameras write.
+Position comes from EXIF GPS, camera attitude and RTK accuracy from the DJI XMP block, which Autel cameras write too.
 """
 
 import json
@@ -18,8 +18,13 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from PIL import ExifTags, Image
 
 # Sensor widths of cameras whose EXIF does not give them reliably, keyed by EXIF (make, model).
-SENSOR_WIDTH_MM = {("DJI", "FC300S"): 6.17}  # Phantom 3 Professional / Advanced
+SENSOR_WIDTH_MM = {
+    ("DJI", "FC300S"): 6.17,  # Phantom 3 Professional / Advanced
+    ("Autel Robotics", "XT705"): 13.2,  # EVO II Pro, 1-inch
+}
 FULL_FRAME_DIAGONAL_MM = math.hypot(36.0, 24.0)
+# DJI writes it as drone-dji:, Autel binds the same namespace to drone:.
+DJI_XMP_NAMESPACE = "http://www.dji.com/drone-dji/1.0/"
 
 type Json = dict[str, object]
 
@@ -154,7 +159,9 @@ def _read_image(
         raise PrepError(f"cannot read {path}: {error}") from error
     exif_ifd = exif.get_ifd(ExifTags.IFD.Exif)
     gps = exif.get_ifd(ExifTags.IFD.GPSInfo)
-    dji = dict(re.findall(r'drone-dji:(\w+)="([^"]*)"', xmp))
+    declared = re.search(rf'xmlns:([\w-]+)="{re.escape(DJI_XMP_NAMESPACE)}"', xmp)
+    prefix = declared[1] if declared else "drone-dji"
+    dji = dict(re.findall(rf'{re.escape(prefix)}:(\w+)="([^"]*)"', xmp))
 
     # Camera
     make = _text(exif.get(ExifTags.Base.Make))
@@ -201,6 +208,14 @@ def _read_image(
     for key, tag in (("yaw", "GimbalYawDegree"), ("pitch", "GimbalPitchDegree"), ("roll", "GimbalRollDegree")):
         if (angle := _float(dji.get(tag))) is not None:
             properties[key] = angle
+    # RTK models (Phantom 4 RTK, EVO II RTK) write the 1-sigma of each fix in metres. It describes the GNSS
+    # height, not the barometric one, so v_acc_m only goes with absolute altitudes.
+    if geometry is not None:
+        std_lat, std_lon, std_height = (_float(dji.get(tag)) for tag in ("RtkStdLat", "RtkStdLon", "RtkStdHgt"))
+        if std_lat is not None and std_lon is not None and min(std_lat, std_lon) > 0:
+            properties["h_acc_m"] = max(std_lat, std_lon)
+        if std_height is not None and std_height > 0 and altitude is AltitudeMode.ABSOLUTE:
+            properties["v_acc_m"] = std_height
 
     return camera_id, camera, {"type": "Feature", "geometry": geometry, "properties": properties}
 

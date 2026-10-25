@@ -1,6 +1,6 @@
 """End-to-end on the OpenDroneMap Brighton Beach dataset (BSD 2-Clause, (c) 2017 Piero Toffanin).
 
-Skipped unless it was fetched with `make data` from the repository root.
+Skipped unless it was fetched with `make download-data` from the repository root.
 """
 
 import json
