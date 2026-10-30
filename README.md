@@ -46,7 +46,7 @@ Needs `ffprobe` (FFmpeg) on the `PATH` to read frame times.
 
 | Option | Default | |
 |---|---|---|
-| `--srt FILE` | `<video>.SRT` / `.srt` | DJI telemetry recorded with the video |
+| `--srt FILE` | `<video>.SRT` / `.srt`, then the subtitle stream inside the video | DJI telemetry recorded with the video |
 | `--altitude relative\|absolute` | `relative` | SRT `rel_alt` / `altitude`, or `abs_alt` |
 | `--vertical-datum ellipsoid\|egm96` | — | Required with `--altitude absolute` |
 | `--timezone NAME` | — | IANA zone of the drone clock; without it no `time_utc` is written |
@@ -61,6 +61,39 @@ dataset_dir/
   video.mp4        # a copy of the input video
   LICENSE ...      # --attribution files
 ```
+
+### Survey
+
+A survey is several clips and many gigabytes, of which a frame every few metres is enough:
+
+```
+photogram-data-prep survey <video-or-dir> [...] -o <dataset_dir> --focal-length-mm MM --sensor-width-mm MM [options]
+```
+
+Needs FFmpeg. A directory stands for the videos directly in it, in file name order.
+
+| Option | Default | |
+|---|---|---|
+| `--focal-length-mm MM` `--sensor-width-mm MM` | required | The video mode's camera; the video does not record it |
+| `--overlap F` | `0.8` | Overlap to keep along the flight, on the ground. Raise it over trees |
+| `--shutter`, `--attribution`, `--overwrite` | | As for images |
+
+`photogram_data_prep.prepare_survey(...)`, in `survey.py`. No video is copied: the output is an image dataset, so
+the pipeline needs nothing else, and it only thins or scales further if you ask it to.
+
+```
+dataset_dir/
+  manifest.geojson
+  images/          # DJI_0153_000437.jpg: clip and frame number
+  LICENSE ...      # --attribution files
+```
+
+Each clip is thinned on its own: the first frame, then a frame each time the distance flown, the integral of the
+telemetry speed, uses up `(1 - overlap)` of the footprint, then the clip's last frame if the drone moved. The
+footprint is the short image side at the telemetry height. Frames are not chosen by GPS, which the Mini 4K rounds to
+about 11 m. So a hover yields no frames and the speed of the flight does not change the spacing.
+
+To change `--overlap`, run it again with `--overwrite`: it takes about a minute per 3 GB of video.
 
 ## What is read
 
@@ -82,6 +115,16 @@ Video, one feature per frame (`frame_index`, presentation order as a decoder out
 | `time_utc` | SRT clock line (`2023-01-11 17:01:55,343`) + `--timezone`, to the millisecond |
 | `cameras` | ffprobe frame size; SRT `focal_len` as the 35 mm equivalent focal length, with the equivalent sensor width of the frame (43.27 mm diagonal) |
 
+Survey, one feature per kept frame (`image`, plus `video` and `video_frame` to trace it back). The telemetry is the
+Mini 4K line, one entry per second, from the subtitle stream inside the clip or an `.SRT` next to it:
+
+| Manifest | From |
+|---|---|
+| `geometry` `[lon, lat, alt]` | `GPS (lon, lat, satellites)`, averaged over ±5 s to undo its rounding, between entries linear; `H` as a height above take-off. 0/0 counts as no fix |
+| `time_utc` | MP4 `creation_time` (UTC, whole seconds) + the frame's presentation time |
+| `cameras` | `--focal-length-mm`, `--sensor-width-mm`, ffprobe frame size. Clips of different sizes are refused |
+| `yaw`, `pitch`, `roll` | not written: this telemetry has none. The overlap assumes a nadir camera |
+
 Notes:
 
 - **Altitude.** The default is `relative_takeoff`: DJI's barometric height above take-off, consistent within
@@ -97,11 +140,14 @@ Notes:
   model: pass `--focal-length-mm` and `--sensor-width-mm` when you know them; bundle adjustment refines the rest.
 - **SRT formats.** Values are read from the `[key: value]` groups of recent DJI models (Mini 2 / SE, Mini 3,
   Mavic 3, Air 2S). `focal_len` of 100 or more is read as tenths of a millimetre (the Mini 2 writes `240`). The
-  older `GPS(lon,lat,alt) BAROMETER:` format of the Phantom 4 is not read.
+  older `GPS(lon,lat,alt) BAROMETER:` format of the Phantom 4 is not read. The Mini 4K line (`GPS (lon, lat,
+  satellites), D .. H .. H.S ..`) is read by both `video` and `survey`; `survey` reads no other format, because
+  it needs the speed.
 
 ## Not yet
 
-- Interpolating positions between SRT entries; digital zoom (`dzoom_ratio`).
+- Interpolating positions between SRT entries in `video` (`survey` does); digital zoom (`dzoom_ratio`).
+- Dropping frames across clips that fly the same ground twice; heights across separate take-offs.
 - GPX / flight logs, lever arm and boresight corrections, accuracy conversion (CEP / 2-sigma → 1-sigma).
 
 ## Test data
