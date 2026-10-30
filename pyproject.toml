@@ -1,6 +1,6 @@
 [project]
 name = "photogram-data-prep"
-version = "0.3.0"
+version = "0.4.0"
 description = "Turns raw drone and camera data into the dataset format read by the photogrammetry pipeline"
 readme = "README.md"
 authors = [

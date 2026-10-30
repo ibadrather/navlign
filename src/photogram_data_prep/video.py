@@ -1,7 +1,8 @@
-"""Prepare a dataset (manifest.geojson + video) from a DJI video and the .SRT telemetry recorded with it.
+"""Prepare a dataset (manifest.geojson + video) from a DJI video and the telemetry recorded with it.
 
-Each video frame gets the SRT entry whose subtitle interval contains the frame's presentation time. Frame times
-come from ffprobe, which must be installed (FFmpeg).
+The telemetry is the .SRT next to the video or, failing that, the subtitle stream inside it. Each video frame gets
+the SRT entry whose subtitle interval contains the frame's presentation time. Frame times come from ffprobe, which
+must be installed (FFmpeg).
 """
 
 import bisect
@@ -30,10 +31,12 @@ TIMING = re.compile(r"(\d+):(\d\d):(\d\d)[,.](\d{3})\s*-->\s*(\d+):(\d\d):(\d\d)
 # Values like latitude: 45.499044 or rel_alt: 1.300 abs_alt: 132.778 inside the [...] groups.
 FIELD = re.compile(r"([A-Za-z_]\w*)\s*:\s*([-+]?\d+(?:\.\d+)?)")
 CLOCK = re.compile(r"(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)(?:[,.](\d{3}))?")
+# The one line the Mini 4K writes: GPS (lon, lat, satellites), D home distance, H height above take-off, H.S speed.
+FLIGHT_LINE = re.compile(r"GPS \(([-\d.]+), ([-\d.]+), [-\d.]+\), D [\d.]+m, H ([-\d.]+)m, H\.S ([\d.]+)m/s")
 
 
 @dataclass(frozen=True)
-class _Entry:
+class Entry:
     """One SRT subtitle: its interval in seconds from the start of the video and the values it carries."""
 
     start_s: float
@@ -59,9 +62,9 @@ def prepare_video(
 ) -> PrepResult:
     """Write dataset_dir/manifest.geojson with one feature per frame and copy the video to dataset_dir.
 
-    srt defaults to the .SRT next to the video. timezone is the IANA zone of the drone clock; without it no
-    time_utc is written. Without focal_length_mm and sensor_width_mm the camera is the 35 mm equivalent from the
-    SRT. Everything is read before anything is written.
+    srt defaults to the .SRT next to the video, then to the subtitle stream inside it. timezone is the IANA zone of
+    the drone clock; without it no time_utc is written. Without focal_length_mm and sensor_width_mm the camera is the
+    35 mm equivalent from the SRT. Everything is read before anything is written.
     """
     if altitude is AltitudeMode.RELATIVE and vertical_datum is not None:
         raise PrepError("a vertical datum only applies to absolute altitudes")
@@ -75,12 +78,8 @@ def prepare_video(
     except (ZoneInfoNotFoundError, ValueError) as error:
         raise PrepError(f"unknown time zone {timezone!r}") from error
 
-    if srt is None:
-        srt = next((path for path in (video.with_suffix(".SRT"), video.with_suffix(".srt")) if path.is_file()), None)
-        if srt is None:
-            raise PrepError(f"no .SRT next to {video}; pass --srt")
-    entries = _read_srt(srt)
-    width, height, times = _probe(video)
+    entries = read_telemetry(video, srt)
+    width, height, times, _ = probe(video)
 
     # Camera
     if focal_length_mm is None or sensor_width_mm is None:
@@ -90,7 +89,7 @@ def prepare_video(
         }
         if len(focals) != 1:
             found = "no" if not focals else "a changing"
-            raise PrepError(f"{srt.name}: {found} focal length; pass --focal-length-mm and --sensor-width-mm")
+            raise PrepError(f"{video.name}: {found} focal length; pass --focal-length-mm and --sensor-width-mm")
         focal_length_mm = focals.pop()
         sensor_width_mm = FULL_FRAME_DIAGONAL_MM * width / math.hypot(width, height)
     camera_id = f"dji_video_{width}x{height}_{focal_length_mm:g}mm"
@@ -118,7 +117,7 @@ def prepare_video(
                 else:
                     alt = entry.fields.get("abs_alt")
                 if alt is None:
-                    raise PrepError(f"{srt.name}: has a position but no {altitude} altitude")
+                    raise PrepError(f"{video.name}: has a position but no {altitude} altitude")
                 geometry = {"type": "Point", "coordinates": [round(lon, 9), round(lat, 9), round(alt, 3)]}
             if zone and entry.clock:
                 local = datetime.strptime(entry.clock, "%Y-%m-%d %H:%M:%S").replace(tzinfo=zone)
@@ -160,24 +159,41 @@ def prepare_video(
     )
 
 
-def _read_srt(path: Path) -> list[_Entry]:
-    """The entries of a DJI .SRT file, in time order."""
+def read_telemetry(video: Path, srt: Path | None = None) -> list[Entry]:
+    """The telemetry of ``video``: from ``srt``, the .SRT next to it, or the subtitle stream inside it."""
+    srt = srt or next((path for path in (video.with_suffix(".SRT"), video.with_suffix(".srt")) if path.is_file()), None)
+    if srt is not None:
+        try:
+            return _parse_srt(srt.read_text(encoding="utf-8-sig", errors="replace"), srt)
+        except OSError as error:
+            raise PrepError(f"cannot read {srt}: {error}") from error
+    command = ["ffmpeg", "-v", "error", "-nostdin", "-i", str(video), "-map", "0:s:0", "-f", "srt", "-"]
     try:
-        text = path.read_text(encoding="utf-8-sig", errors="replace")
-    except OSError as error:
-        raise PrepError(f"cannot read {path}: {error}") from error
-    entries: list[_Entry] = []
+        completed = subprocess.run(command, capture_output=True, check=True, text=True, errors="replace")
+    except FileNotFoundError as error:
+        raise PrepError("ffmpeg not found; install FFmpeg") from error
+    except subprocess.CalledProcessError as error:
+        raise PrepError(f"no .SRT next to {video} and no subtitle stream in it; pass --srt") from error
+    return _parse_srt(completed.stdout, video)
+
+
+def _parse_srt(text: str, path: Path) -> list[Entry]:
+    """The entries of a DJI subtitle file, in time order."""
+    entries: list[Entry] = []
     for block in re.split(r"\n\s*\n", text.replace("\r\n", "\n")):
         if not (timing := TIMING.search(block)):
             continue
         h0, m0, s0, ms0, h1, m1, s1, ms1 = (int(part) for part in timing.groups())
         body = re.sub(r"<[^>]+>", " ", block[timing.end() :])
         clock = CLOCK.search(body)
+        fields = {key: float(value) for key, value in FIELD.findall(CLOCK.sub(" ", body))}
+        if flight := FLIGHT_LINE.search(body):
+            fields["longitude"], fields["latitude"], fields["rel_alt"], fields["speed_ms"] = map(float, flight.groups())
         entries.append(
-            _Entry(
+            Entry(
                 start_s=h0 * 3600 + m0 * 60 + s0 + ms0 / 1000,
                 end_s=h1 * 3600 + m1 * 60 + s1 + ms1 / 1000,
-                fields={key: float(value) for key, value in FIELD.findall(CLOCK.sub(" ", body))},
+                fields=fields,
                 clock=clock[1] if clock else None,
                 clock_ms=int(clock[2] or 0) if clock else 0,
             )
@@ -187,10 +203,10 @@ def _read_srt(path: Path) -> list[_Entry]:
     return sorted(entries, key=lambda entry: entry.start_s)
 
 
-def _probe(video: Path) -> tuple[int, int, list[float]]:
-    """Width, height and frame presentation times in seconds from the first frame, via ffprobe."""
-    command = ["ffprobe", "-v", "error", "-select_streams", "v:0"]
-    command += ["-show_entries", "stream=width,height:packet=pts_time", "-of", "json", str(video)]
+def probe(video: Path) -> tuple[int, int, list[float], str | None]:
+    """Width, height, frame presentation times in seconds from the first frame and the creation time, via ffprobe."""
+    command = ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries"]
+    command += ["stream=width,height:packet=pts_time:format_tags=creation_time", "-of", "json", str(video)]
     try:
         completed = subprocess.run(command, capture_output=True, check=True, text=True)
     except FileNotFoundError as error:
@@ -198,9 +214,10 @@ def _probe(video: Path) -> tuple[int, int, list[float]]:
     except subprocess.CalledProcessError as error:
         raise PrepError(f"cannot read {video}: {error.stderr.strip()}") from error
     try:
-        probe = json.loads(completed.stdout)
-        stream = probe["streams"][0]
-        times = sorted(float(packet["pts_time"]) for packet in probe["packets"])
-        return int(stream["width"]), int(stream["height"]), [time - times[0] for time in times]
+        info = json.loads(completed.stdout)
+        stream = info["streams"][0]
+        times = sorted(float(packet["pts_time"]) for packet in info["packets"])
+        created = info.get("format", {}).get("tags", {}).get("creation_time")
+        return int(stream["width"]), int(stream["height"]), [time - times[0] for time in times], created
     except (KeyError, IndexError, TypeError, ValueError) as error:
         raise PrepError(f"{video.name}: no video stream with frame times") from error

@@ -8,6 +8,7 @@ from rich.console import Console
 from rich.table import Table
 
 from photogram_data_prep.images import AltitudeMode, PrepError, PrepResult, Shutter, VerticalDatum, prepare_images
+from photogram_data_prep.survey import prepare_survey
 from photogram_data_prep.video import prepare_video
 
 app = typer.Typer(no_args_is_help=True, add_completion=False)
@@ -121,6 +122,53 @@ def video(
         console.print(f"[red]error:[/red] {error}")
         raise typer.Exit(1) from error
     _report(result)
+
+
+@app.command()
+def survey(
+    sources: Annotated[list[Path], typer.Argument(exists=True, help="DJI videos, or directories of them.")],
+    *,
+    output: Annotated[Path, typer.Option("--output", "-o", help="Dataset directory to write.")],
+    focal_length_mm: Annotated[
+        float,
+        typer.Option(min=0.1, help="Focal length of the video mode; with --sensor-width-mm. The video does not say."),
+    ],
+    sensor_width_mm: Annotated[float, typer.Option(min=0.1, help="Width of the sensor area the video uses.")],
+    overlap: Annotated[
+        float,
+        typer.Option(min=0.01, max=0.99, help="Overlap to keep along the flight, on the ground; raise it over trees."),
+    ] = 0.8,
+    shutter: Annotated[Shutter, typer.Option(help="Sensor readout; not recorded in the video.")] = Shutter.ROLLING,
+    attribution: Annotated[
+        list[Path] | None,
+        typer.Option(exists=True, dir_okay=False, help="Licence or credits file to copy along; repeatable."),
+    ] = None,
+    overwrite: Annotated[bool, typer.Option(help="Replace an existing manifest and images directory.")] = False,
+) -> None:
+    """Prepare a dataset from the video clips of a survey, keeping only the frames the overlap needs."""
+    try:
+        result = prepare_survey(
+            sources,
+            output,
+            focal_length_mm=focal_length_mm,
+            sensor_width_mm=sensor_width_mm,
+            overlap=overlap,
+            shutter=shutter,
+            attribution=attribution or (),
+            overwrite=overwrite,
+        )
+    except PrepError as error:
+        console.print(f"[red]error:[/red] {error}")
+        raise typer.Exit(1) from error
+    table = Table(box=None)
+    for heading in ("clip", "length", "flown", "frames", "kept"):
+        table.add_column(heading, justify="left" if heading == "clip" else "right")
+    for clip in result.clips:
+        table.add_row(clip.name, f"{clip.duration_s:.0f} s", f"{clip.flown_m:.0f} m", str(clip.frames), str(clip.kept))
+    console.print(table)
+    _report(result)
+    gigabytes = result.image_bytes / 1e9, result.video_bytes / 1e9
+    console.print(f"{gigabytes[0]:.2f} GB of images from {gigabytes[1]:.2f} GB of video")
 
 
 def _report(result: PrepResult) -> None:
