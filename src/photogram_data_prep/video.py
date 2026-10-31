@@ -31,8 +31,11 @@ TIMING = re.compile(r"(\d+):(\d\d):(\d\d)[,.](\d{3})\s*-->\s*(\d+):(\d\d):(\d\d)
 # Values like latitude: 45.499044 or rel_alt: 1.300 abs_alt: 132.778 inside the [...] groups.
 FIELD = re.compile(r"([A-Za-z_]\w*)\s*:\s*([-+]?\d+(?:\.\d+)?)")
 CLOCK = re.compile(r"(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)(?:[,.](\d{3}))?")
-# The one line the Mini 4K writes: GPS (lon, lat, satellites), D home distance, H height above take-off, H.S speed.
-FLIGHT_LINE = re.compile(r"GPS \(([-\d.]+), ([-\d.]+), [-\d.]+\), D [\d.]+m, H ([-\d.]+)m, H\.S ([\d.]+)m/s")
+# The one line the Mini 4K writes: SS shutter as 1/s, DZOOM digital zoom, GPS (lon, lat, satellites), D home distance,
+# H height above take-off, H.S speed.
+FLIGHT_LINE = re.compile(r"GPS \(([-\d.]+), ([-\d.]+), ([-\d.]+)\), D [\d.]+m, H ([-\d.]+)m, H\.S ([\d.]+)m/s")
+EXPOSURE = re.compile(r"\bSS ([\d.]+)")
+ZOOM = re.compile(r"\bDZOOM ([\d.]+)")
 
 
 @dataclass(frozen=True)
@@ -188,7 +191,12 @@ def _parse_srt(text: str, path: Path) -> list[Entry]:
         clock = CLOCK.search(body)
         fields = {key: float(value) for key, value in FIELD.findall(CLOCK.sub(" ", body))}
         if flight := FLIGHT_LINE.search(body):
-            fields["longitude"], fields["latitude"], fields["rel_alt"], fields["speed_ms"] = map(float, flight.groups())
+            names = ("longitude", "latitude", "satellites", "rel_alt", "speed_ms")
+            fields |= dict(zip(names, map(float, flight.groups()), strict=True))
+            if exposure := EXPOSURE.search(body):
+                fields["shutter"] = float(exposure[1])
+            if zoom := ZOOM.search(body):
+                fields["zoom"] = float(zoom[1])
         entries.append(
             Entry(
                 start_s=h0 * 3600 + m0 * 60 + s0 + ms0 / 1000,

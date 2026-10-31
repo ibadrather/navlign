@@ -64,36 +64,115 @@ dataset_dir/
 
 ### Survey
 
-A survey is several clips and many gigabytes, of which a frame every few metres is enough:
+A survey is several clips and many gigabytes, of which a frame every few metres is enough. Point `survey` at the clips
+and it reads the telemetry and the pixels, measures the camera, picks the frames, writes the dataset and says whether
+to trust it:
 
 ```
-photogram-data-prep survey <video-or-dir> [...] -o <dataset_dir> --focal-length-mm MM --sensor-width-mm MM [options]
+photogram-data-prep survey <video-or-dir> [...] -o <dataset_dir> [options]
+photogram-data-prep check  <video-or-dir> [...] [options]     # the same, writing nothing; exits 1 if the data will not do
+photogram-data-prep camera <video-or-dir> [...]               # only the camera
+make camera VIDEOS=<video-or-dir>                             # the same, from this directory
 ```
 
-Needs FFmpeg. A directory stands for the videos directly in it, in file name order.
+Needs FFmpeg. A directory stands for the videos directly in it, in file name order. It takes about a tenth of the
+length of the footage, plus as much again to write the frames.
 
 | Option | Default | |
 |---|---|---|
-| `--focal-length-mm MM` `--sensor-width-mm MM` | required | The video mode's camera; the video does not record it |
-| `--overlap F` | `0.8` | Overlap to keep along the flight, on the ground. Raise it over trees |
+| `--overlap F` | `0.85` | Share of a frame the next one still shows, measured on the pixels |
+| `--focal-length-mm MM` `--sensor-width-mm MM` | measured | A camera to use instead; `check` compares it with the footage |
 | `--shutter`, `--attribution`, `--overwrite` | | As for images |
 
-`photogram_data_prep.prepare_survey(...)`, in `survey.py`. No video is copied: the output is an image dataset, so
-the pipeline needs nothing else, and it only thins or scales further if you ask it to.
+`photogram_data_prep.prepare_survey(...)` in `survey.py`, `check_survey(...)` next to it. No video is copied: the output
+is an image dataset, so the pipeline needs nothing else.
 
 ```
 dataset_dir/
   manifest.geojson
-  images/          # DJI_0153_000437.jpg: clip and frame number
-  LICENSE ...      # --attribution files
+  images/            # DJI_0153_000437.jpg: clip and frame number
+  prep_report.json   # verdict, each check, each clip, the camera
+  LICENSE ...        # --attribution files
 ```
 
-Each clip is thinned on its own: the first frame, then a frame each time the distance flown, the integral of the
-telemetry speed, uses up `(1 - overlap)` of the footprint, then the clip's last frame if the drone moved. The
-footprint is the short image side at the telemetry height. Frames are not chosen by GPS, which the Mini 4K rounds to
-about 11 m. So a hover yields no frames and the speed of the flight does not change the spacing.
+Only the video and its telemetry go in; no mission plan or flight log is read.
 
-To change `--overlap`, run it again with `--overwrite`: it takes about a minute per 3 GB of video.
+#### Picking frames
+
+Five times a second the tool tracks a few hundred points from one frame to the next, with OpenCV (`scan.py`), which gives
+a rotation, a scale and a shift. These are chained from the last frame kept, and the next frame is kept when the share
+of the image still in view falls to `--overlap`. So:
+
+- no camera model and no height go into the choice, and the overlap is true of whatever the camera was looking at:
+  trees get more frames than a car park;
+- a hover adds nothing, and going back and forth adds nothing;
+- a turn or a climb costs overlap as it should;
+- images with no texture, under a quarter of the frame, yield no frames. That is open water: it cannot be mapped, so
+  it is left out and reported, not counted as a fault. Each stretch of land starts again with a new frame.
+
+Where the overlap runs out, a frame more than 5 % softer than its neighbours gives way to a slightly earlier one.
+Sharpness is only compared within a second, as it also depends on what is in view.
+
+Finding features and matching them across the survey stays in sfm: nothing here tries to do that job twice.
+
+#### The camera
+
+`camera` prints the focal length, field of view, footprint, ground resolution and the speed that keeps motion blur to
+1 px at the exposure flown, then a block to paste into the acquisition software:
+
+```json
+{"type": "camera", "sensor_w_mm": 6.17, "sensor_h_mm": 3.471, "focal_mm": 5.236, "image_w_px": 2720, "image_h_px": 1530}
+```
+
+Footprints come out right when computed as `height * sensor / focal`. It is the video mode that is described, not the
+sensor on the spec sheet: the mode crops it. The sensor width is a convention, only the ratio to the focal length counts.
+
+The focal length comes from `f = flow * H / v`: how fast the ground moves in the image, from the pixels, against the
+speed and height from the telemetry (`camera.py`). Trees are closer and move faster, and water can show reflections,
+which move too slowly, so it uses the slow points of each pair of samples, in steady straight flight over land, and
+the low end of those. It needs steady flight of at least 1 m/s over land.
+
+Treat it as ±5 %: `H` is above the take-off point, not above the ground under the camera. It describes the footprint
+at a telemetry height. sfm refines it, and on this drone ends 6 to 11 % shorter and says so in a warning; that warning
+is expected, and preparing the dataset again with sfm's value would change nothing, as sfm reaches it from any start.
+
+#### Checks
+
+Each is a number against a threshold, written to `prep_report.json`. The verdict is the worst of them.
+
+| Check | Warns when |
+|---|---|
+| `frames` | Fails under 3 frames |
+| `front overlap` | The worst 5 % of pairs fall 10 points under the target, on the pixels |
+| `coverage` | The frames fall into separate blocks by position, which sfm will not join |
+| `side overlap` | Lines overlap under 60 %, from telemetry positions and the footprint |
+| `sharpness` | Over 10 % of kept frames are softer than 85 % of their neighbours |
+| `motion blur` | Over 5 % of kept frames blur more than 2 px, from speed, shutter and height |
+| `telemetry` | Digital zoom was used, frames have no position, or under 10 satellites |
+| `featureless` | Never: how much of the footage had nothing to map |
+| `camera` | A camera passed in is over 10 % from the footage, or the footage could not confirm it |
+
+#### What the Mini 4K footage taught
+
+From nine 2.7K and two 4K clips of 2026-10-30 and 2026-10-31:
+
+- **A keyframe looks 50 % sharper and is not better.** The variance of the Laplacian jumps on each I frame, once a
+  second, and takes three frames to settle, but SIFT matches between I frames were no better than between P frames at
+  the same baseline (218 / 220, 259 / 278, 141 / 153, 764 / 889 inliers). The extra is grain. Samples sit between
+  keyframes, so this does not decide which frame is kept.
+- **Real blur is rare**: a handful of samples per clip are 15 % softer than those around them. It helps to step around
+  them; hunting the sharpest frame does not.
+- **2.7K shows the same view as 4K**, within the 5 % scatter of these measurements: no sign of a different crop.
+- **Two measures of the focal length differ by 6 to 11 %.** On one patch of frames bundle adjustment reaches one value
+  from any start (2045 px at 2.7K from 1940, 2308 and 2733), and it does separate focal length from depth, likely thanks
+  to the 2 to 3° the camera sits off nadir. But the value moves with the site (2031, 2045, 2131 px at 2.7K for one lens)
+  and sits under the one from image motion, at 4K too, where three flight heights give about 3100 px and it gives 2868.
+  Footprints from the image motion are the safe number for planning. Which depth is right is open: a hover at two
+  heights over one road would settle it, as the slope of pixels per metre needs no take-off height. Until then read
+  relief in a DSM as possibly 10 % low.
+- **Water can lie.** Tracks over a lake gave a focal length 25 % too short: reflections of trees sit below the ground.
+- **Decoding only keyframes is no shortcut**, about 1.5 times faster and on the noisiest frames, and `-hwaccel` was
+  slower than software on this machine.
 
 ## What is read
 
@@ -116,14 +195,15 @@ Video, one feature per frame (`frame_index`, presentation order as a decoder out
 | `cameras` | ffprobe frame size; SRT `focal_len` as the 35 mm equivalent focal length, with the equivalent sensor width of the frame (43.27 mm diagonal) |
 
 Survey, one feature per kept frame (`image`, plus `video` and `video_frame` to trace it back). The telemetry is the
-Mini 4K line, one entry per second, from the subtitle stream inside the clip or an `.SRT` next to it:
+Mini 4K line, one entry per second, from the subtitle stream inside the clip or an `.SRT` next to it. `H.S`, `H` and `SS`
+measure the camera and the blur, `DZOOM` and the satellite count go to the checks:
 
 | Manifest | From |
 |---|---|
 | `geometry` `[lon, lat, alt]` | `GPS (lon, lat, satellites)`, averaged over ±5 s to undo its rounding, between entries linear; `H` as a height above take-off. 0/0 counts as no fix |
 | `time_utc` | MP4 `creation_time` (UTC, whole seconds) + the frame's presentation time |
-| `cameras` | `--focal-length-mm`, `--sensor-width-mm`, ffprobe frame size. Clips of different sizes are refused |
-| `yaw`, `pitch`, `roll` | not written: this telemetry has none. The overlap assumes a nadir camera |
+| `cameras` | Measured from the footage, or `--focal-length-mm`, `--sensor-width-mm`; ffprobe frame size. Clips of different sizes are refused |
+| `yaw`, `pitch`, `roll` | not written: this telemetry has none |
 
 Notes:
 
@@ -147,7 +227,8 @@ Notes:
 ## Not yet
 
 - Interpolating positions between SRT entries in `video` (`survey` does); digital zoom (`dzoom_ratio`).
-- Dropping frames across clips that fly the same ground twice; heights across separate take-offs.
+- Dropping frames across clips that fly the same ground twice; heights across separate take-offs; telling a tilted
+  gimbal from a nadir one, which the telemetry does not record.
 - GPX / flight logs, lever arm and boresight corrections, accuracy conversion (CEP / 2-sigma → 1-sigma).
 
 ## Test data
@@ -188,7 +269,8 @@ The GCPs and the RINEX / MRK files are not read yet.
 
 ## Development
 
-`uv sync` at the root installs it. In this directory: `uv run pytest`, `uv run ruff check src tests`, `uv run ty check src tests`.
+`uv sync` at the root installs it, or `make setup` in this directory, which leaves the root package's dependencies alone
+and excludes `.venv` from iCloud Drive, which otherwise hides its `.pth` files from Python. In this directory: `uv run pytest`, `uv run ruff check src tests`, `uv run ty check src tests`.
 Ruff settings come from the photogrammetry root `ruff.toml`; copy it when the package moves out. The Brighton
 Beach, DJI video and Helenenschacht tests are skipped when `../../data` has no copy of the dataset; tests that make a video
 are skipped without FFmpeg.

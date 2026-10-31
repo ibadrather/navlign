@@ -1,6 +1,6 @@
 [project]
 name = "photogram-data-prep"
-version = "0.4.0"
+version = "0.5.1"
 description = "Turns raw drone and camera data into the dataset format read by the photogrammetry pipeline"
 readme = "README.md"
 authors = [
@@ -8,6 +8,8 @@ authors = [
 ]
 requires-python = ">=3.13"
 dependencies = [
+    "numpy>=2.5.4",
+    "opencv-python-headless>=4.12",
     "pillow>=13.0.0",
     "rich>=15.0.0",
     "typer>=0.27.3",

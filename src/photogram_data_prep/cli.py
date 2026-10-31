@@ -7,8 +7,11 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
+from photogram_data_prep.camera import ACCURACY, Camera, measure_camera
+from photogram_data_prep.checks import Check, Level, verdict
 from photogram_data_prep.images import AltitudeMode, PrepError, PrepResult, Shutter, VerticalDatum, prepare_images
-from photogram_data_prep.survey import prepare_survey
+from photogram_data_prep.scan import scan_clip
+from photogram_data_prep.survey import ClipResult, check_survey, list_videos, prepare_survey
 from photogram_data_prep.video import prepare_video
 
 app = typer.Typer(no_args_is_help=True, add_completion=False)
@@ -130,14 +133,15 @@ def survey(
     *,
     output: Annotated[Path, typer.Option("--output", "-o", help="Dataset directory to write.")],
     focal_length_mm: Annotated[
-        float,
-        typer.Option(min=0.1, help="Focal length of the video mode; with --sensor-width-mm. The video does not say."),
-    ],
-    sensor_width_mm: Annotated[float, typer.Option(min=0.1, help="Width of the sensor area the video uses.")],
+        float | None,
+        typer.Option(min=0.1, help="Focal length of the video mode, with --sensor-width-mm; default: measured."),
+    ] = None,
+    sensor_width_mm: Annotated[
+        float | None, typer.Option(min=0.1, help="Width of the sensor area the video uses.")
+    ] = None,
     overlap: Annotated[
-        float,
-        typer.Option(min=0.01, max=0.99, help="Overlap to keep along the flight, on the ground; raise it over trees."),
-    ] = 0.8,
+        float, typer.Option(min=0.01, max=0.99, help="Share of a frame the next one still shows, on the pixels.")
+    ] = 0.85,
     shutter: Annotated[Shutter, typer.Option(help="Sensor readout; not recorded in the video.")] = Shutter.ROLLING,
     attribution: Annotated[
         list[Path] | None,
@@ -145,7 +149,7 @@ def survey(
     ] = None,
     overwrite: Annotated[bool, typer.Option(help="Replace an existing manifest and images directory.")] = False,
 ) -> None:
-    """Prepare a dataset from the video clips of a survey, keeping only the frames the overlap needs."""
+    """Prepare a dataset from the video clips of a survey: pick the frames, measure the camera, check the result."""
     try:
         result = prepare_survey(
             sources,
@@ -160,15 +164,100 @@ def survey(
     except PrepError as error:
         console.print(f"[red]error:[/red] {error}")
         raise typer.Exit(1) from error
-    table = Table(box=None)
-    for heading in ("clip", "length", "flown", "frames", "kept"):
-        table.add_column(heading, justify="left" if heading == "clip" else "right")
-    for clip in result.clips:
-        table.add_row(clip.name, f"{clip.duration_s:.0f} s", f"{clip.flown_m:.0f} m", str(clip.frames), str(clip.kept))
-    console.print(table)
+    _print_clips(result.clips)
     _report(result)
     gigabytes = result.image_bytes / 1e9, result.video_bytes / 1e9
     console.print(f"{gigabytes[0]:.2f} GB of images from {gigabytes[1]:.2f} GB of video")
+    _print_checks(result.checks)
+
+
+@app.command()
+def check(
+    sources: Annotated[list[Path], typer.Argument(exists=True, help="DJI videos, or directories of them.")],
+    *,
+    focal_length_mm: Annotated[
+        float | None,
+        typer.Option(min=0.1, help="A camera to test against the footage, with --sensor-width-mm."),
+    ] = None,
+    sensor_width_mm: Annotated[
+        float | None, typer.Option(min=0.1, help="Width of the sensor area the video uses.")
+    ] = None,
+    overlap: Annotated[
+        float, typer.Option(min=0.01, max=0.99, help="Share of a frame the next one still shows, on the pixels.")
+    ] = 0.85,
+) -> None:
+    """Say what survey would keep and whether to trust it, writing nothing. Exits 1 if the data will not do."""
+    try:
+        result = check_survey(
+            sources, focal_length_mm=focal_length_mm, sensor_width_mm=sensor_width_mm, overlap=overlap
+        )
+    except PrepError as error:
+        console.print(f"[red]error:[/red] {error}")
+        raise typer.Exit(1) from error
+    _print_clips(result.clips)
+    _print_checks(result.checks)
+    if result.verdict is Level.FAIL:
+        raise typer.Exit(1)
+
+
+@app.command()
+def camera(
+    sources: Annotated[list[Path], typer.Argument(exists=True, help="DJI videos of one video mode, or directories.")],
+) -> None:
+    """Measure the camera of a video mode from the footage, for the acquisition software."""
+    try:
+        measured = measure_camera([scan_clip(video) for video in list_videos(sources)])
+    except PrepError as error:
+        console.print(f"[red]error:[/red] {error}")
+        raise typer.Exit(1) from error
+    _print_camera(measured)
+
+
+def _print_camera(measured: Camera) -> None:
+    """Print the camera and the block to paste into the acquisition software."""
+    height_m = measured.flight_height_m
+    across_m, along_m = measured.footprint_m(height_m)
+    horizontal, vertical = measured.fov_deg
+    table = Table(show_header=False, box=None)
+    table.add_row("video mode", f"{measured.width} x {measured.height}")
+    table.add_row("focal length", f"{measured.focal_px:.0f} px, ±{ACCURACY:.0%}, from {measured.pairs} samples")
+    table.add_row("field of view", f"{horizontal:.1f}° x {vertical:.1f}°")
+    table.add_row(f"at {height_m:.1f} m", f"{across_m:.1f} m across, {along_m:.1f} m along")
+    table.add_row("per metre of height", f"{across_m / height_m:.3f} across, {along_m / height_m:.3f} along")
+    table.add_row("ground resolution", f"{measured.gsd_cm(height_m):.2f} cm/px")
+    if limit := measured.speed_limit_ms(height_m):
+        table.add_row("speed limit", f"{limit:.1f} m/s for 1 px of blur at this exposure")
+    console.print(table)
+    console.print("Acquisition profile:")
+    console.print_json(data=measured.acquisition_profile())
+
+
+def _print_clips(clips: list[ClipResult]) -> None:
+    """Print what came out of each clip."""
+    table = Table(box=None)
+    for heading in ("clip", "length", "flown", "frames", "kept", "no texture"):
+        table.add_column(heading, justify="left" if heading == "clip" else "right")
+    for clip in clips:
+        table.add_row(
+            clip.name,
+            f"{clip.duration_s:.0f} s",
+            f"{clip.flown_m:.0f} m",
+            str(clip.frames),
+            str(clip.kept),
+            f"{clip.featureless_s:.0f} s",
+        )
+    console.print(table)
+
+
+def _print_checks(checks: list[Check]) -> None:
+    """Print each check and the verdict."""
+    colours = {Level.PASS: "green", Level.WARN: "yellow", Level.FAIL: "red"}
+    table = Table(show_header=False, box=None)
+    for item in checks:
+        table.add_row(f"[{colours[item.level]}]{item.level}[/]", item.name, item.message)
+    console.print(table)
+    level = verdict(checks)
+    console.print(f"verdict: [{colours[level]}]{level}[/]")
 
 
 def _report(result: PrepResult) -> None:
