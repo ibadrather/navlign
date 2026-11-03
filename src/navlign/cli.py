@@ -7,12 +7,12 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from photogram_data_prep.camera import ACCURACY, Camera, measure_camera
-from photogram_data_prep.checks import Check, Level, verdict
-from photogram_data_prep.images import AltitudeMode, PrepError, PrepResult, Shutter, VerticalDatum, prepare_images
-from photogram_data_prep.scan import scan_clip
-from photogram_data_prep.survey import ClipResult, check_survey, list_videos, prepare_survey
-from photogram_data_prep.video import prepare_video
+from navlign.camera import ACCURACY, Camera, measure_camera
+from navlign.checks import Check, Level, verdict
+from navlign.images import AltitudeMode, PrepError, PrepResult, Shutter, VerticalDatum, prepare_images
+from navlign.scan import scan_clip
+from navlign.survey import ClipResult, check_survey, list_videos, prepare_survey
+from navlign.video import prepare_video
 
 app = typer.Typer(no_args_is_help=True, add_completion=False)
 console = Console()

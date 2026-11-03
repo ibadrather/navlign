@@ -1,6 +1,6 @@
 """End-to-end on the OpenDroneMap DJI video dataset (no licence given; local testing only).
 
-Skipped unless it was fetched with `make download-data` from the repository root and FFmpeg is installed.
+Skipped unless it was fetched with `make download-data` in this repository and FFmpeg is installed.
 """
 
 import json
@@ -8,9 +8,10 @@ import shutil
 from pathlib import Path
 
 import pytest
-from photogram_data_prep import prepare_video
 
-RAW = Path(__file__).resolve().parents[3] / "data" / "drone_dataset_dji_video"
+from navlign import prepare_video
+
+RAW = Path(__file__).resolve().parents[1] / "data" / "drone_dataset_dji_video"
 
 pytestmark = [
     pytest.mark.skipif(not (RAW / "DJI_0317.MP4").is_file(), reason="run `make download-data` to fetch the video"),

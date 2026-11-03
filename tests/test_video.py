@@ -4,7 +4,8 @@ import subprocess
 from pathlib import Path
 
 import pytest
-from photogram_data_prep import AltitudeMode, PrepError, VerticalDatum, prepare_video
+
+from navlign import AltitudeMode, PrepError, VerticalDatum, prepare_video
 
 needs_ffmpeg = pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="needs FFmpeg")
 

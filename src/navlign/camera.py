@@ -19,8 +19,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from photogram_data_prep.images import Json, PrepError
-from photogram_data_prep.scan import ClipScan
+from navlign.images import Json, PrepError
+from navlign.scan import ClipScan
 
 ACCURACY = 0.05
 SENSOR_WIDTH_MM = 6.17  # only the ratio to the focal length matters: this is the 1/2.3 inch sensor of the Mini 4K

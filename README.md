@@ -1,18 +1,21 @@
-# photogram-data-prep
+# navlign
 
 Turns raw drone and camera data into the dataset read by the
-[photogrammetry](../../README.md) pipeline: a `manifest.geojson` plus the media. Vendor formats are handled
-here so the pipeline only ever sees one format.
+[photogrammetry](https://github.com/ibadrather/photogrammetry) pipeline: a `manifest.geojson` plus the media.
+Vendor formats are handled here so the pipeline only ever sees one format.
 
-It sits in `packages/` of the photogrammetry repo for now as a uv workspace member: the pipeline depends on it
-(editable) and the workspace shares one `uv.lock` at the root. It has no imports from the pipeline, so it can
-be moved to its own repository as is; then run `uv lock` there and point the pipeline's
-`[tool.uv.sources]` entry at the new repo.
+It was `photogram-data-prep` in `packages/` of the photogrammetry repo. It has no imports from the pipeline and
+the pipeline none from it: the two meet only in the dataset format.
+
+```bash
+uv tool install git+https://github.com/ibadrather/navlign.git   # the navlign command
+uv add git+https://github.com/ibadrather/navlign.git            # or as a library in a uv project
+```
 
 ## Usage
 
 ```
-photogram-data-prep images <images_dir> -o <dataset_dir> [options]
+navlign images <images_dir> -o <dataset_dir> [options]
 ```
 
 | Option | Default | |
@@ -25,7 +28,7 @@ photogram-data-prep images <images_dir> -o <dataset_dir> [options]
 | `--attribution FILE` | — | Licence or credits to copy into the dataset; repeatable |
 | `--overwrite` | off | Replace an existing manifest and `images/` |
 
-The same is available as `photogram_data_prep.prepare_images(...)`; all of it lives in `images.py`.
+The same is available as `navlign.prepare_images(...)`; all of it lives in `images.py`.
 
 Output:
 
@@ -39,7 +42,7 @@ dataset_dir/
 ### Video
 
 ```
-photogram-data-prep video <video> -o <dataset_dir> [options]
+navlign video <video> -o <dataset_dir> [options]
 ```
 
 Needs `ffprobe` (FFmpeg) on the `PATH` to read frame times.
@@ -53,7 +56,7 @@ Needs `ffprobe` (FFmpeg) on the `PATH` to read frame times.
 | `--focal-length-mm MM` `--sensor-width-mm MM` | 35 mm equivalent | Physical camera, given together |
 | `--shutter`, `--attribution`, `--overwrite` | | As for images |
 
-`photogram_data_prep.prepare_video(...)`, in `video.py`. Output:
+`navlign.prepare_video(...)`, in `video.py`. Output:
 
 ```
 dataset_dir/
@@ -69,9 +72,9 @@ and it reads the telemetry and the pixels, measures the camera, picks the frames
 to trust it:
 
 ```
-photogram-data-prep survey <video-or-dir> [...] -o <dataset_dir> [options]
-photogram-data-prep check  <video-or-dir> [...] [options]     # the same, writing nothing; exits 1 if the data will not do
-photogram-data-prep camera <video-or-dir> [...]               # only the camera
+navlign survey <video-or-dir> [...] -o <dataset_dir> [options]
+navlign check  <video-or-dir> [...] [options]     # the same, writing nothing; exits 1 if the data will not do
+navlign camera <video-or-dir> [...]               # only the camera
 make camera VIDEOS=<video-or-dir>                             # the same, from this directory
 ```
 
@@ -84,7 +87,7 @@ length of the footage, plus as much again to write the frames.
 | `--focal-length-mm MM` `--sensor-width-mm MM` | measured | A camera to use instead; `check` compares it with the footage |
 | `--shutter`, `--attribution`, `--overwrite` | | As for images |
 
-`photogram_data_prep.prepare_survey(...)` in `survey.py`, `check_survey(...)` next to it. No video is copied: the output
+`navlign.prepare_survey(...)` in `survey.py`, `check_survey(...)` next to it. No video is copied: the output
 is an image dataset, so the pipeline needs nothing else.
 
 ```
@@ -235,12 +238,12 @@ Notes:
 
 Tests and examples use the **Brighton Beach** dataset from OpenDroneMap,
 <https://github.com/OpenDroneMap/drone_dataset_brighton_beach>: 18 images from a DJI Phantom 3 (FC300S),
-Copyright (c) 2017 Piero Toffanin, BSD 2-Clause License. The data is not committed: fetch it with `make download-data`
-from the photogrammetry repository root, then prepare it (the dataset's `LICENSE` travels with it):
+Copyright (c) 2017 Piero Toffanin, BSD 2-Clause License. The data is not committed: fetch it into `data/` with
+`make download-data`, then prepare it (the dataset's `LICENSE` travels with it):
 
 ```
-uv run photogram-data-prep images ../../data/drone_dataset_brighton_beach/images -o ../../data/brighton_beach \
-    --timezone America/Chicago --attribution ../../data/drone_dataset_brighton_beach/LICENSE
+uv run navlign images data/drone_dataset_brighton_beach/images -o data/brighton_beach \
+    --timezone America/Chicago --attribution data/drone_dataset_brighton_beach/LICENSE
 ```
 
 The video tests use the **DJI video** dataset from OpenDroneMap, <https://github.com/OpenDroneMap/drone_dataset_dji_video>:
@@ -248,7 +251,7 @@ The video tests use the **DJI video** dataset from OpenDroneMap, <https://github
 testing only.
 
 ```
-uv run photogram-data-prep video ../../data/drone_dataset_dji_video/DJI_0317.MP4 -o ../../data/dji_video \
+uv run navlign video data/drone_dataset_dji_video/DJI_0317.MP4 -o data/dji_video \
     --timezone Europe/Rome
 ```
 
@@ -260,17 +263,18 @@ GNU General Public License v3. It is 2.5 GB, so it has its own target, `make dow
 are ellipsoidal (EXIF `GPSAltitude` matches the MRK `Ellh`) and the camera clock is local time (CEST):
 
 ```
-uv run photogram-data-prep images ../../data/odm_data_helenenschacht/images -o ../../data/helenenschacht \
+uv run navlign images data/odm_data_helenenschacht/images -o data/helenenschacht \
     --altitude absolute --vertical-datum ellipsoid --timezone Europe/Vienna \
-    --attribution ../../data/odm_data_helenenschacht/README.md --attribution ../../data/odm_data_helenenschacht/LICENSE
+    --attribution data/odm_data_helenenschacht/README.md --attribution data/odm_data_helenenschacht/LICENSE
 ```
 
 The GCPs and the RINEX / MRK files are not read yet.
 
 ## Development
 
-`uv sync` at the root installs it, or `make setup` in this directory, which leaves the root package's dependencies alone
-and excludes `.venv` from iCloud Drive, which otherwise hides its `.pth` files from Python. In this directory: `uv run pytest`, `uv run ruff check src tests`, `uv run ty check src tests`.
-Ruff settings come from the photogrammetry root `ruff.toml`; copy it when the package moves out. The Brighton
-Beach, DJI video and Helenenschacht tests are skipped when `../../data` has no copy of the dataset; tests that make a video
-are skipped without FFmpeg.
+`make dev-setup` installs it with the dev tools into `.venv` and excludes `.venv` from iCloud Drive, which otherwise
+hides its `.pth` files from Python. Then `uv run pytest`, `uv run ruff check`, `uv run ty check`, or `make test`,
+`make format`, `make type-check`. The Brighton Beach, DJI video and Helenenschacht tests are skipped when `data/` has
+no copy of the dataset; tests that make a video are skipped without FFmpeg.
+
+Every code change bumps the version in `pyproject.toml` and runs `uv lock`; CI fails a change to `src/` without a bump.

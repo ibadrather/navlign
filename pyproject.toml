@@ -1,6 +1,6 @@
 [project]
-name = "photogram-data-prep"
-version = "0.5.1"
+name = "navlign"
+version = "0.6.0"
 description = "Turns raw drone and camera data into the dataset format read by the photogrammetry pipeline"
 readme = "README.md"
 authors = [
@@ -16,7 +16,7 @@ dependencies = [
 ]
 
 [project.scripts]
-photogram-data-prep = "photogram_data_prep.cli:app"
+navlign = "navlign.cli:app"
 
 [build-system]
 requires = ["uv_build>=0.12.7,<0.13.0"]

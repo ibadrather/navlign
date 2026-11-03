@@ -3,11 +3,12 @@
 from pathlib import Path
 
 import numpy as np
-from photogram_data_prep import Camera, Check, Level
-from photogram_data_prep.checks import run_checks, verdict
-from photogram_data_prep.images import Json
-from photogram_data_prep.scan import ClipScan, Sample
-from photogram_data_prep.video import Entry
+
+from navlign import Camera, Check, Level
+from navlign.checks import run_checks, verdict
+from navlign.images import Json
+from navlign.scan import ClipScan, Sample
+from navlign.video import Entry
 
 WIDTH, HEIGHT = 2720, 1530
 METRE_LAT = 1 / 111_195  # degrees of latitude in a metre, on the sphere the checks use

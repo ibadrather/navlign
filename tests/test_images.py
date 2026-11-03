@@ -3,7 +3,8 @@ from collections.abc import Callable
 from pathlib import Path
 
 import pytest
-from photogram_data_prep import AltitudeMode, PrepError, Shutter, VerticalDatum, prepare_images
+
+from navlign import AltitudeMode, PrepError, Shutter, VerticalDatum, prepare_images
 
 type MakeJpeg = Callable[..., Path]
 

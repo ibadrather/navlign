@@ -21,10 +21,10 @@ from pathlib import Path
 
 import numpy as np
 
-from photogram_data_prep.camera import SENSOR_WIDTH_MM, Camera, measure_camera
-from photogram_data_prep.checks import Check, Level, run_checks, verdict
-from photogram_data_prep.images import Json, PrepError, PrepResult, Shutter
-from photogram_data_prep.scan import MIN_TEXTURE, ClipScan, Sample, at, overlap_of, scan_clip
+from navlign.camera import SENSOR_WIDTH_MM, Camera, measure_camera
+from navlign.checks import Check, Level, run_checks, verdict
+from navlign.images import Json, PrepError, PrepResult, Shutter
+from navlign.scan import MIN_TEXTURE, ClipScan, Sample, at, overlap_of, scan_clip
 
 VIDEO_SUFFIXES = frozenset({".mp4", ".mov"})
 JPEG_QUALITY = 2  # ffmpeg -q:v, 1 (best) to 31

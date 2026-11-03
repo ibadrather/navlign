@@ -17,7 +17,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from photogram_data_prep.images import (
+from navlign.images import (
     FULL_FRAME_DIAGONAL_MM,
     AltitudeMode,
     Json,

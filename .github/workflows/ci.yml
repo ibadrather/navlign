@@ -1,0 +1,89 @@
+name: CI
+
+# Lint, type check and test on every push to any branch and on every pull
+# request - but only when something that can change the result changed: the
+# source, the tests, the scripts, the tooling config or this workflow. A README
+# change alone skips it.
+
+on:
+  push:
+    branches: ["**"]
+    paths:
+      - "src/**"
+      - "tests/**"
+      - ".github/scripts/**"
+      - ".github/workflows/ci.yml"
+      - "pyproject.toml"
+      - "uv.lock"
+      - "ruff.toml"
+      - ".python-version"
+  pull_request:
+    paths:
+      - "src/**"
+      - "tests/**"
+      - ".github/scripts/**"
+      - ".github/workflows/ci.yml"
+      - "pyproject.toml"
+      - "uv.lock"
+      - "ruff.toml"
+      - ".python-version"
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Lint (ruff)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: astral-sh/setup-uv@v10.1.0
+        with:
+          enable-cache: true
+          cache-suffix: ${{ github.workflow }}-lint
+
+      - name: Install
+        run: uv sync --locked
+
+      - name: Formatting
+        run: uv run ruff format --check
+
+      - name: Lint
+        run: uv run ruff check --output-format=github
+
+  typecheck:
+    name: Type check (ty)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: astral-sh/setup-uv@v10.1.0
+        with:
+          enable-cache: true
+          cache-suffix: ${{ github.workflow }}-typecheck
+
+      - name: Install
+        run: uv sync --locked
+
+      - name: ty
+        run: uv run ty check --output-format=github
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: astral-sh/setup-uv@v10.1.0
+        with:
+          enable-cache: true
+          cache-suffix: ${{ github.workflow }}-test
+
+      - name: Install
+        run: uv sync --locked
+
+      # pytest exits 5 when it collects no tests; accept that so the job stays
+      # green until the first test lands, while real failures still fail it.
+      - name: Tests
+        run: uv run pytest -rs || [ $? -eq 5 ]

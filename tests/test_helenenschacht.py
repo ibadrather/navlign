@@ -1,15 +1,16 @@
 """End-to-end on the OpenDroneMap Helenenschacht survey (Daniel Dobosi, GNU GPL v3): Autel EVO II Pro RTK images.
 
-Skipped unless it was fetched with `make download-helenenschacht` from the repository root.
+Skipped unless it was fetched with `make download-helenenschacht` in this repository.
 """
 
 import json
 from pathlib import Path
 
 import pytest
-from photogram_data_prep import AltitudeMode, VerticalDatum, prepare_images
 
-RAW = Path(__file__).resolve().parents[3] / "data" / "odm_data_helenenschacht"
+from navlign import AltitudeMode, VerticalDatum, prepare_images
+
+RAW = Path(__file__).resolve().parents[1] / "data" / "odm_data_helenenschacht"
 
 pytestmark = pytest.mark.skipif(
     not (RAW / "images").is_dir(), reason="run `make download-helenenschacht` to fetch Helenenschacht"

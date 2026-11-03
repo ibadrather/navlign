@@ -20,8 +20,8 @@ import numpy as np
 from cv2.typing import MatLike
 from numpy.typing import NDArray
 
-from photogram_data_prep.images import PrepError
-from photogram_data_prep.video import Entry, probe, read_telemetry
+from navlign.images import PrepError
+from navlign.video import Entry, probe, read_telemetry
 
 type Matrix = NDArray[np.float64]
 

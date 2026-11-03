@@ -7,11 +7,12 @@ from typing import Any
 import numpy as np
 import pytest
 from numpy.typing import NDArray
-from photogram_data_prep import Level, PrepError, check_survey, prepare_survey, prepare_video, scan_clip
-from photogram_data_prep.camera import MIN_PAIRS, measure_camera
-from photogram_data_prep.scan import MIN_TEXTURE, Sample, overlap_of, overlaps_between
-from photogram_data_prep.survey import _integrate, _smooth, choose_frames
 from PIL import Image
+
+from navlign import Level, PrepError, check_survey, prepare_survey, prepare_video, scan_clip
+from navlign.camera import MIN_PAIRS, measure_camera
+from navlign.scan import MIN_TEXTURE, Sample, overlap_of, overlaps_between
+from navlign.survey import _integrate, _smooth, choose_frames
 
 needs_ffmpeg = pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="needs FFmpeg")
 

@@ -1,17 +1,20 @@
 """End-to-end on the OpenDroneMap Brighton Beach dataset (BSD 2-Clause, (c) 2017 Piero Toffanin).
 
-Skipped unless it was fetched with `make download-data` from the repository root.
+Skipped unless it was fetched with `make download-data` in this repository.
 """
 
 import json
 from pathlib import Path
 
 import pytest
-from photogram_data_prep import prepare_images
 
-RAW = Path(__file__).resolve().parents[3] / "data" / "drone_dataset_brighton_beach"
+from navlign import prepare_images
 
-pytestmark = pytest.mark.skipif(not (RAW / "images").is_dir(), reason="run `make data` to fetch Brighton Beach")
+RAW = Path(__file__).resolve().parents[1] / "data" / "drone_dataset_brighton_beach"
+
+pytestmark = pytest.mark.skipif(
+    not (RAW / "images").is_dir(), reason="run `make download-data` to fetch Brighton Beach"
+)
 
 
 def test_brighton_beach(tmp_path: Path) -> None:

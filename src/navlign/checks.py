@@ -12,9 +12,9 @@ from enum import StrEnum
 
 import numpy as np
 
-from photogram_data_prep.camera import ACCURACY, Camera
-from photogram_data_prep.images import Json
-from photogram_data_prep.scan import MIN_TEXTURE, ClipScan, overlaps_between
+from navlign.camera import ACCURACY, Camera
+from navlign.images import Json
+from navlign.scan import MIN_TEXTURE, ClipScan, overlaps_between
 
 MIN_FRAMES = 3  # two views define no reconstruction worth the name
 OVERLAP_SLACK = 0.1  # how far under the target a stretch may fall before it counts
