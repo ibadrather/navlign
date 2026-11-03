@@ -1,6 +1,6 @@
 [project]
 name = "navlign"
-version = "0.6.0"
+version = "0.7.0"
 description = "Turns raw drone and camera data into the dataset format read by the photogrammetry pipeline"
 readme = "README.md"
 authors = [

@@ -3,6 +3,7 @@
 from navlign.camera import Camera, measure_camera
 from navlign.checks import Check, Level
 from navlign.images import AltitudeMode, PrepError, PrepResult, Shutter, VerticalDatum, prepare_images
+from navlign.metadata import VideoMetadata, read_metadata, write_metadata
 from navlign.scan import scan_clip
 from navlign.survey import ClipResult, SurveyCheck, SurveyResult, check_survey, prepare_survey
 from navlign.video import prepare_video
@@ -19,10 +20,13 @@ __all__ = [
     "SurveyCheck",
     "SurveyResult",
     "VerticalDatum",
+    "VideoMetadata",
     "check_survey",
     "measure_camera",
     "prepare_images",
     "prepare_survey",
     "prepare_video",
+    "read_metadata",
     "scan_clip",
+    "write_metadata",
 ]

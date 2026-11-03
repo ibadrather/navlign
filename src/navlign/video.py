@@ -34,19 +34,28 @@ CLOCK = re.compile(r"(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)(?:[,.](\d{3}))?")
 # The one line the Mini 4K writes: SS shutter as 1/s, DZOOM digital zoom, GPS (lon, lat, satellites), D home distance,
 # H height above take-off, H.S speed.
 FLIGHT_LINE = re.compile(r"GPS \(([-\d.]+), ([-\d.]+), ([-\d.]+)\), D [\d.]+m, H ([-\d.]+)m, H\.S ([\d.]+)m/s")
-EXPOSURE = re.compile(r"\bSS ([\d.]+)")
-ZOOM = re.compile(r"\bDZOOM ([\d.]+)")
+# The other values of that line: aperture, shutter, ISO, exposure bias, digital zoom, home distance, vertical speed.
+LINE_VALUES = {
+    "f_number": re.compile(r"\bF/([\d.]+)"),
+    "shutter": re.compile(r"\bSS ([\d.]+)"),
+    "iso": re.compile(r"\bISO ([\d.]+)"),
+    "ev": re.compile(r"\bEV ([-+]?[\d.]+)"),
+    "zoom": re.compile(r"\bDZOOM ([\d.]+)"),
+    "home_distance_m": re.compile(r"\bD ([\d.]+)m\b"),
+    "vertical_speed_ms": re.compile(r"\bV\.S ([-+]?[\d.]+)m/s"),
+}
 
 
 @dataclass(frozen=True)
 class Entry:
-    """One SRT subtitle: its interval in seconds from the start of the video and the values it carries."""
+    """One SRT subtitle: its interval in seconds from the start of the video, the values it carries and its text."""
 
     start_s: float
     end_s: float
     fields: dict[str, float]
     clock: str | None
     clock_ms: int
+    text: str = ""
 
 
 def prepare_video(
@@ -164,7 +173,7 @@ def prepare_video(
 
 def read_telemetry(video: Path, srt: Path | None = None) -> list[Entry]:
     """The telemetry of ``video``: from ``srt``, the .SRT next to it, or the subtitle stream inside it."""
-    srt = srt or next((path for path in (video.with_suffix(".SRT"), video.with_suffix(".srt")) if path.is_file()), None)
+    srt = srt or find_srt(video)
     if srt is not None:
         try:
             return _parse_srt(srt.read_text(encoding="utf-8-sig", errors="replace"), srt)
@@ -180,6 +189,11 @@ def read_telemetry(video: Path, srt: Path | None = None) -> list[Entry]:
     return _parse_srt(completed.stdout, video)
 
 
+def find_srt(video: Path) -> Path | None:
+    """The .SRT next to ``video``, if there is one."""
+    return next((path for path in (video.with_suffix(".SRT"), video.with_suffix(".srt")) if path.is_file()), None)
+
+
 def _parse_srt(text: str, path: Path) -> list[Entry]:
     """The entries of a DJI subtitle file, in time order."""
     entries: list[Entry] = []
@@ -193,10 +207,7 @@ def _parse_srt(text: str, path: Path) -> list[Entry]:
         if flight := FLIGHT_LINE.search(body):
             names = ("longitude", "latitude", "satellites", "rel_alt", "speed_ms")
             fields |= dict(zip(names, map(float, flight.groups()), strict=True))
-            if exposure := EXPOSURE.search(body):
-                fields["shutter"] = float(exposure[1])
-            if zoom := ZOOM.search(body):
-                fields["zoom"] = float(zoom[1])
+            fields |= {name: float(found[1]) for name, value in LINE_VALUES.items() if (found := value.search(body))}
         entries.append(
             Entry(
                 start_s=h0 * 3600 + m0 * 60 + s0 + ms0 / 1000,
@@ -204,6 +215,7 @@ def _parse_srt(text: str, path: Path) -> list[Entry]:
                 fields=fields,
                 clock=clock[1] if clock else None,
                 clock_ms=int(clock[2] or 0) if clock else 0,
+                text=" ".join(body.split()),
             )
         )
     if not entries:
