@@ -10,6 +10,8 @@ from rich.table import Table
 from navlign.camera import ACCURACY, Camera, measure_camera
 from navlign.checks import Check, Level, verdict
 from navlign.images import AltitudeMode, PrepError, PrepResult, Shutter, VerticalDatum, prepare_images
+from navlign.metadata import output_paths, read_metadata, write_metadata
+from navlign.report import print_metadata
 from navlign.scan import scan_clip
 from navlign.survey import ClipResult, check_survey, list_videos, prepare_survey
 from navlign.video import prepare_video
@@ -211,6 +213,39 @@ def camera(
         console.print(f"[red]error:[/red] {error}")
         raise typer.Exit(1) from error
     _print_camera(measured)
+
+
+@app.command("inspect")
+def inspect_video(
+    source: Annotated[Path, typer.Argument(exists=True, dir_okay=False, help="Video file (MP4 / MOV).")],
+    *,
+    output: Annotated[
+        Path | None,
+        typer.Option("--output", "-o", file_okay=False, help="Directory to write to; default: next to the video."),
+    ] = None,
+    srt: Annotated[
+        Path | None,
+        typer.Option(exists=True, dir_okay=False, help="SRT telemetry; default: the .SRT next to the video."),
+    ] = None,
+    rows: Annotated[
+        int, typer.Option(min=0, help="Telemetry entries to print, from the start and the end; 0 prints all.")
+    ] = 10,
+    overwrite: Annotated[bool, typer.Option(help="Replace existing output files.")] = False,
+) -> None:
+    """Print all a video carries; write <video>.nav.geojson (position, motion, attitude) and <video>.camera.json."""
+    output = output or source.parent
+    if not overwrite and (existing := [path for path in output_paths(source, output) if path.exists()]):
+        console.print(f"[red]error:[/red] {existing[0]} already exists; pass --overwrite to replace it")
+        raise typer.Exit(1)
+    try:
+        metadata = read_metadata(source, srt=srt)
+        print_metadata(console, metadata, rows)
+        nav_path, camera_path = write_metadata(metadata, output, overwrite=overwrite)
+    except PrepError as error:
+        console.print(f"[red]error:[/red] {error}")
+        raise typer.Exit(1) from error
+    console.print(f"wrote [bold]{nav_path}[/] ({len(metadata.entries)} points)")
+    console.print(f"wrote [bold]{camera_path}[/] ({len(metadata.entries)} entries, {len(metadata.frames)} frames)")
 
 
 def _print_camera(measured: Camera) -> None:

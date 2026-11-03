@@ -177,6 +177,39 @@ From nine 2.7K and two 4K clips of 2026-10-30 and 2026-10-31:
 - **Decoding only keyframes is no shortcut**, about 1.5 times faster and on the noisiest frames, and `-hwaccel` was
   slower than software on this machine.
 
+### Inspect
+
+To see all a video carries, and keep it:
+
+```
+navlign inspect <video> [-o <dir>] [--srt FILE] [--rows N] [--overwrite]
+```
+
+It prints the container, its tags, the MP4 user data, the streams, the frames and the telemetry, and writes two files
+next to the video (or to `-o`) that share their timestamps:
+
+```
+DJI_0173.nav.geojson   # a point per telemetry entry: position, height, speeds, satellites, home distance, raw line;
+                       # navigation.at_start: aircraft and gimbal attitude and speed when the recording started
+DJI_0173.camera.json   # exposure per telemetry entry; container, streams, device, user data; a row per frame
+```
+
+Each telemetry entry has `index`, `start_s`, `end_s` (seconds of video) and `time_utc` in both files; each frame
+names its `entry`, and each point its `first_frame` and `last_frame`. `time_utc` is the container `creation_time`
+plus the seconds of video: DJI writes the start of the recording there in UTC (on the Mini 4K it is the file's
+creation time to the second). Nothing is decoded, so a 2 GB clip takes about two seconds. `--rows` prints that many
+entries from the start and the end, `0` all of them. `navlign.read_metadata(...)` and `write_metadata(...)` in
+`metadata.py`.
+
+What a Mini 4K clip holds, beyond the once-a-second telemetry line:
+
+- `moov/udta` (`boxes.py`): `©fpt` `©fyw` `©frl` aircraft pitch, yaw, roll and `©gpt` `©gyw` `©grl` gimbal pitch, yaw,
+  roll at the start of the recording, `©xsp` `©ysp` `©zsp` speeds, `©xyz` location, `©mdl` camera model (`FC7703`),
+  `©csn` serial number, `©res` video mode, `Xtra` version strings. Atoms whose layout is not known are kept as hex.
+- the `DJI.Meta` data stream: on this drone every packet is the same 250 bytes of filler. Newer DJI models write
+  attitude there; that format is not decoded, and `inspect` says when a data stream holds more than filler.
+- no attitude and no IMU per entry or per frame.
+
 ## What is read
 
 | Manifest | From |
