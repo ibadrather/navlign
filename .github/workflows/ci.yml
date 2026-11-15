@@ -80,6 +80,10 @@ jobs:
           enable-cache: true
           cache-suffix: ${{ github.workflow }}-test
 
+      # The video tests decode and probe real clips; without FFmpeg they skip.
+      - name: Install FFmpeg
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
+
       - name: Install
         run: uv sync --locked
 

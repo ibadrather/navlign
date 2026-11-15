@@ -129,6 +129,7 @@ def test_refuses_to_overwrite_unless_asked(tmp_path: Path, video: Path) -> None:
     prepare_video(video, dataset, overwrite=True)
 
 
+@needs_ffmpeg
 def test_missing_srt(tmp_path: Path) -> None:
     with pytest.raises(PrepError, match=r"no \.SRT"):
         prepare_video(tmp_path / "DJI_0001.MP4", tmp_path / "dataset")

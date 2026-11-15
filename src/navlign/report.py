@@ -57,11 +57,10 @@ def _print_container(console: Console, metadata: VideoMetadata) -> None:
         table.add_row(f"tag {key}", str(value))
     if start := metadata.start_utc:
         check = ""
-        try:
-            born = datetime.fromtimestamp(metadata.path.stat().st_birthtime, UTC)
+        # Only some platforms (macOS, BSD, Windows) record when a file was created.
+        if (birthtime := getattr(metadata.path.stat(), "st_birthtime", None)) is not None:
+            born = datetime.fromtimestamp(birthtime, UTC)
             check = f", the file was created {(born - start).total_seconds():+.0f} s from it"
-        except AttributeError:
-            pass
         table.add_row("[bold]start of recording[/]", f"{metadata.time_utc(0)}{check}")
     if location := metadata.location:
         table.add_row("[bold]location[/]", f"{location[0]:+.4f}, {location[1]:+.4f}  (lat, lon at the start)")
