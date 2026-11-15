@@ -18,7 +18,7 @@ import shutil
 import subprocess
 import tempfile
 from collections.abc import Sequence
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -74,6 +74,8 @@ class SurveyResult(PrepResult):
     camera: Camera
     checks: list[Check]
     trajectory_path: Path | None = None  # every point of the flight logs used, when there were any
+    nav_found: list[Path] = field(default_factory=list)  # navigation files covering the time of the clips
+    nav_used: list[Path] = field(default_factory=list)  # those a clip was fitted to, in time order
 
     @property
     def verdict(self) -> Level:
@@ -89,6 +91,8 @@ class SurveyCheck:
     camera: Camera
     checks: list[Check]
     frames: int
+    nav_found: list[Path] = field(default_factory=list)  # navigation files covering the time of the clips
+    nav_used: list[Path] = field(default_factory=list)  # those a clip was fitted to, in time order
 
     @property
     def verdict(self) -> Level:
@@ -120,8 +124,17 @@ def check_survey(
     nav: Sequence[Path] | None = None,
 ) -> SurveyCheck:
     """Say what prepare_survey would keep and whether to trust it, writing nothing."""
-    clips, camera, _, checks, _ = _plan(sources, focal_length_mm, sensor_width_mm, overlap, Shutter.ROLLING, nav)
-    return SurveyCheck([clip.result for clip in clips], camera, checks, sum(len(clip.kept) for clip in clips))
+    clips, camera, _, checks, tracks, found = _plan(
+        sources, focal_length_mm, sensor_width_mm, overlap, Shutter.ROLLING, nav
+    )
+    return SurveyCheck(
+        [clip.result for clip in clips],
+        camera,
+        checks,
+        sum(len(clip.kept) for clip in clips),
+        nav_found=[track.path for track in found],
+        nav_used=[track.path for track in tracks],
+    )
 
 
 def prepare_survey(
@@ -145,7 +158,9 @@ def prepare_survey(
     missions; by default the folders of the videos and those in NAVLIGN_NAV are searched. Everything is read before
     anything is written.
     """
-    clips, camera, cameras, checks, tracks = _plan(sources, focal_length_mm, sensor_width_mm, overlap, shutter, nav)
+    clips, camera, cameras, checks, tracks, found = _plan(
+        sources, focal_length_mm, sensor_width_mm, overlap, shutter, nav
+    )
     if not any(clip.kept for clip in clips):
         raise PrepError("no frame has texture to work with: nothing to write")
 
@@ -192,6 +207,8 @@ def prepare_survey(
         camera=camera,
         checks=checks,
         trajectory_path=trajectory_path if tracks else None,
+        nav_found=[track.path for track in found],
+        nav_used=[track.path for track in tracks],
     )
     (dataset_dir / REPORT_NAME).write_text(json.dumps(_report(result), indent=2) + "\n", encoding="utf-8")
     return result
@@ -268,9 +285,9 @@ def _plan(
     overlap: float,
     shutter: Shutter,
     nav: Sequence[Path] | None,
-) -> tuple[list[_Clip], Camera, dict[str, Json], list[Check], list[Track]]:
+) -> tuple[list[_Clip], Camera, dict[str, Json], list[Check], list[Track], list[Track]]:
     """Read every clip, fit it to the flight log, measure the camera, choose the frames and check them. Writes
-    nothing. The tracks returned are those a clip was fitted to, in time order."""
+    nothing. The tracks returned are those a clip was fitted to, in time order, then all that cover the clips."""
     if not 0 < overlap < 1:
         raise PrepError(f"overlap must be between 0 and 1, got {overlap}")
     if (focal_length_mm is None) != (sensor_width_mm is None):
@@ -318,7 +335,7 @@ def _plan(
     )
     checks.append(_navigation_check([clip.result for clip in clips], found))
     used = {fit.track.path: fit.track for fit in alignments if fit}
-    return clips, measured, cameras, checks, sorted(used.values(), key=lambda track: track.times[0])
+    return clips, measured, cameras, checks, sorted(used.values(), key=lambda track: track.times[0]), found
 
 
 def _align_clips(scans: Sequence[ClipScan], places: Sequence[Path]) -> tuple[list[Track], list[Alignment | None]]:

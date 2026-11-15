@@ -10,9 +10,11 @@ import numpy as np
 import pytest
 from numpy.typing import NDArray
 from PIL import Image
+from typer.testing import CliRunner
 
 from navlign import Level, PrepError, check_survey, prepare_survey, prepare_video, scan_clip
 from navlign.camera import MIN_PAIRS, measure_camera
+from navlign.cli import app
 from navlign.scan import MIN_TEXTURE, Sample, overlap_of, overlaps_between
 from navlign.survey import _integrate, _smooth, choose_frames
 
@@ -380,6 +382,22 @@ def test_a_flight_log_next_to_the_clips_gives_position_attitude_and_time(
     assert len(trajectory["features"]) == 600
     assert result.trajectory_path == dataset / "trajectory.geojson"
     assert {check.name: check.level for check in result.checks}["navigation"] is Level.PASS
+    assert result.nav_found == result.nav_used == [(tmp_path / "raw" / "mission" / "frames-1.csv").resolve()]
+
+    # Without --nav the command finds the log under the video folder and names it before and after the run.
+    output = (
+        CliRunner()
+        .invoke(
+            app,
+            ["check", str(clip.parent), "--overlap", "0.9", "--focal-length-mm", "5.785", "--sensor-width-mm", "6.17"],
+            env={"COLUMNS": "200"},
+        )
+        .output
+    )
+    navigation, summary = output.split("╭─ navigation")[1], output.split("╭─ check")[1]
+    assert "the video folder" in navigation and "and its subfolders" in navigation
+    assert "mission/frames-1.csv" in navigation and "flight log, ~10 Hz" in navigation
+    assert "mission/frames-1.csv" in summary and "1 of 1 clips" in summary and "verdict" in summary
 
 
 @needs_ffmpeg
@@ -393,6 +411,7 @@ def test_without_a_flight_log_nothing_changes(tmp_path: Path) -> None:
     assert set(manifest["features"][0]["properties"]) == {"image", "camera", "video", "video_frame", "time_utc"}
     assert not (tmp_path / "dataset" / "trajectory.geojson").exists()
     assert result.clips[0].nav == "video telemetry"
+    assert result.nav_found == result.nav_used == []
 
 
 @needs_ffmpeg

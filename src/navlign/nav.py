@@ -121,9 +121,8 @@ def nav_places(videos: Sequence[Path], nav: Sequence[Path] | None) -> list[Path]
     return places + [Path(place) for place in os.environ.get(NAV_ENV, "").split(os.pathsep) if place]
 
 
-def find_tracks(places: Sequence[Path], start: float, end: float) -> list[Track]:
-    """The tracks in ``places`` (files, or folders searched all the way down) with points between start and end,
-    the finest first."""
+def nav_files(places: Sequence[Path]) -> list[Path]:
+    """The navigation files in ``places`` (files, or folders searched all the way down), whatever their time."""
     files: dict[Path, None] = {}
     for place in places:
         if not place.exists():
@@ -134,8 +133,23 @@ def find_tracks(places: Sequence[Path], start: float, end: float) -> list[Track]
                 continue
             if high_res or FRAMES_NAME.fullmatch(path.name) or FLOWN_NAME.fullmatch(path.name):
                 files[path.resolve()] = None
+    return list(files)
+
+
+def nav_kind(path: Path) -> str:
+    """What a navigation file holds, in a few words."""
+    if FRAMES_NAME.fullmatch(path.name):
+        return "flight log, ~10 Hz"
+    if HIGH_RES_NAME.fullmatch(path.name):
+        return "flight log as GeoJSON, ~10 Hz"
+    return "live fixes, ~1.3 s"
+
+
+def find_tracks(places: Sequence[Path], start: float, end: float) -> list[Track]:
+    """The tracks in ``places`` (files, or folders searched all the way down) with points between start and end,
+    the finest first."""
     tracks: list[Track] = []
-    for path in files:
+    for path in nav_files(places):
         try:
             first, last = _span(path)
             if first > end or last < start:
