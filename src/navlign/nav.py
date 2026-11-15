@@ -93,12 +93,13 @@ class Track:
         """Whether ``time`` lies between two points that are close enough to interpolate."""
         return bool(self.covered(np.array([time]))[0])
 
-    def at(self, time: float) -> dict[str, float]:
+    def at(self, time: float) -> dict[str, float | int]:
         """Every column at ``time``, linear between the two points around it; yaws come back within ±180°."""
         values = {name: float(np.interp(time, self.times, column)) for name, column in self.columns.items()}
         for name in YAWS & values.keys():
             values[name] = (values[name] + 180) % 360 - 180
-        return {name: round(value, DECIMALS.get(name, 2)) for name, value in values.items()}
+        rounded = {name: round(value, DECIMALS.get(name, 2)) for name, value in values.items()}
+        return {name: int(value) if name == "satellites" else value for name, value in rounded.items()}
 
 
 @dataclass(frozen=True)
