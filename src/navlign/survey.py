@@ -5,9 +5,12 @@ JPEGs, and copies no video: the pipeline gets an image dataset a small fraction 
 
 Frames are chosen by how far the image really moved, measured from the pixels (see ``scan.py``), so no camera model
 goes into the choice and the overlap holds over trees, in turns, in a hover and across a change of height. Stretches
-with no texture, like open water, yield no frames. Position is the GPS, averaged over a few seconds as the Mini 4K
-rounds it to about 11 m of latitude. The camera is measured from the footage (see ``camera.py``), and the result is
-checked (see ``checks.py``), so one command reads the videos, picks the frames and says whether to trust them.
+with no texture, like open water, yield no frames. Position, height and attitude come from the flight log when one is
+found that fits the clip (see ``nav.py``), interpolated to the time of the frame, and all of that log is written next to
+the manifest as trajectory.geojson. Without one, position is the GPS of the video telemetry, averaged over a few seconds
+as the Mini 4K rounds it to about 11 m of latitude. The camera is measured from the footage (see ``camera.py``), and
+the result is checked (see ``checks.py``), so one command reads the videos, picks the frames and says whether to trust
+them.
 """
 
 import json
@@ -15,7 +18,7 @@ import shutil
 import subprocess
 import tempfile
 from collections.abc import Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -24,6 +27,16 @@ import numpy as np
 from navlign.camera import SENSOR_WIDTH_MM, Camera, measure_camera
 from navlign.checks import Check, Level, run_checks, verdict
 from navlign.images import Json, PrepError, PrepResult, Shutter
+from navlign.nav import (
+    MARGIN_S,
+    TRAJECTORY_NAME,
+    Alignment,
+    Track,
+    align,
+    find_tracks,
+    nav_places,
+    write_trajectory,
+)
 from navlign.scan import MIN_TEXTURE, ClipScan, Sample, at, overlap_of, scan_clip
 
 VIDEO_SUFFIXES = frozenset({".mp4", ".mov"})
@@ -32,6 +45,7 @@ SMOOTHING_S = 5.0  # half window of the GPS mean: long enough to span a rounding
 PICK_WINDOW = 3  # samples before the overlap runs out among which to avoid a soft frame
 SOFT_MARGIN = 0.95  # the latest of those is kept unless it is this much softer than the sharpest
 REPORT_NAME = "prep_report.json"
+VIDEO_NAV = "video telemetry"  # where the positions of a clip are from when no flight log fits it
 
 
 @dataclass(frozen=True)
@@ -44,6 +58,10 @@ class ClipResult:
     frames: int
     kept: int
     featureless_s: float
+    nav: str = VIDEO_NAV  # the file the positions are from
+    time_scale: float = 1.0  # real seconds per second of video, fitted to that file
+    clock_offset_s: float = 0.0  # how long after its creation time the clip began
+    nav_frames: int = 0  # kept frames with a position from that file
 
 
 @dataclass(frozen=True)
@@ -55,6 +73,7 @@ class SurveyResult(PrepResult):
     image_bytes: int
     camera: Camera
     checks: list[Check]
+    trajectory_path: Path | None = None  # every point of the flight logs used, when there were any
 
     @property
     def verdict(self) -> Level:
@@ -98,9 +117,10 @@ def check_survey(
     focal_length_mm: float | None = None,
     sensor_width_mm: float | None = None,
     overlap: float = 0.85,
+    nav: Sequence[Path] | None = None,
 ) -> SurveyCheck:
     """Say what prepare_survey would keep and whether to trust it, writing nothing."""
-    clips, camera, _, checks = _plan(sources, focal_length_mm, sensor_width_mm, overlap, Shutter.ROLLING)
+    clips, camera, _, checks, _ = _plan(sources, focal_length_mm, sensor_width_mm, overlap, Shutter.ROLLING, nav)
     return SurveyCheck([clip.result for clip in clips], camera, checks, sum(len(clip.kept) for clip in clips))
 
 
@@ -114,15 +134,18 @@ def prepare_survey(
     shutter: Shutter = Shutter.ROLLING,
     attribution: Sequence[Path] = (),
     overwrite: bool = False,
+    nav: Sequence[Path] | None = None,
 ) -> SurveyResult:
-    """Write dataset_dir/manifest.geojson, the frames of ``sources`` that keep ``overlap`` to dataset_dir/images/ and
-    dataset_dir/prep_report.json.
+    """Write dataset_dir/manifest.geojson, the frames of ``sources`` that keep ``overlap`` to dataset_dir/images/,
+    dataset_dir/prep_report.json and, when a flight log fits the clips, dataset_dir/trajectory.geojson.
 
     sources are videos, or directories of them taken in file name order. overlap is the share of a frame that the next
     one still shows, measured on the pixels, between 0 and 1. The camera is measured from the footage unless
-    focal_length_mm and sensor_width_mm are given, together. Everything is read before anything is written.
+    focal_length_mm and sensor_width_mm are given, together. nav are files or folders with flight logs and Swathwise
+    missions; by default the folders of the videos and those in NAVLIGN_NAV are searched. Everything is read before
+    anything is written.
     """
-    clips, camera, cameras, checks = _plan(sources, focal_length_mm, sensor_width_mm, overlap, shutter)
+    clips, camera, cameras, checks, tracks = _plan(sources, focal_length_mm, sensor_width_mm, overlap, shutter, nav)
     if not any(clip.kept for clip in clips):
         raise PrepError("no frame has texture to work with: nothing to write")
 
@@ -134,6 +157,8 @@ def prepare_survey(
     shutil.rmtree(images_dir, ignore_errors=True)
     for old_video in dataset_dir.glob("video.*"):
         old_video.unlink()
+    trajectory_path = dataset_dir / TRAJECTORY_NAME
+    trajectory_path.unlink(missing_ok=True)
     images_dir.mkdir(parents=True)
     for clip in clips:
         if clip.kept:
@@ -142,18 +167,18 @@ def prepare_survey(
         shutil.copy2(path, dataset_dir / path.name)
 
     features = [feature for clip in clips for feature in clip.features]
-    manifest = {
-        "type": "FeatureCollection",
-        "photogrammetry": {
-            "schema_version": "0.1.0",
-            "source": "images",
-            "altitude_reference": "relative_takeoff",
-            "orientation_convention": "ned_yaw_pitch_roll_deg",
-            "cameras": cameras,
-            "frame_selection": {"method": "overlap", "overlap": overlap, "measure": "image motion"},
-        },
-        "features": features,
+    header: Json = {
+        "schema_version": "0.1.0",
+        "source": "images",
+        "altitude_reference": "relative_takeoff",
+        "orientation_convention": "ned_yaw_pitch_roll_deg",
+        "cameras": cameras,
+        "frame_selection": {"method": "overlap", "overlap": overlap, "measure": "image motion"},
     }
+    if tracks:
+        write_trajectory(trajectory_path, tracks)
+        header["navigation"] = {"sources": [track.path.name for track in tracks], "trajectory": TRAJECTORY_NAME}
+    manifest = {"type": "FeatureCollection", "photogrammetry": header, "features": features}
     manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     result = SurveyResult(
         manifest_path=manifest_path,
@@ -166,6 +191,7 @@ def prepare_survey(
         image_bytes=sum(path.stat().st_size for path in images_dir.iterdir()),
         camera=camera,
         checks=checks,
+        trajectory_path=trajectory_path if tracks else None,
     )
     (dataset_dir / REPORT_NAME).write_text(json.dumps(_report(result), indent=2) + "\n", encoding="utf-8")
     return result
@@ -241,8 +267,10 @@ def _plan(
     sensor_width_mm: float | None,
     overlap: float,
     shutter: Shutter,
-) -> tuple[list[_Clip], Camera, dict[str, Json], list[Check]]:
-    """Read every clip, measure the camera, choose the frames and check them. Writes nothing."""
+    nav: Sequence[Path] | None,
+) -> tuple[list[_Clip], Camera, dict[str, Json], list[Check], list[Track]]:
+    """Read every clip, fit it to the flight log, measure the camera, choose the frames and check them. Writes
+    nothing. The tracks returned are those a clip was fitted to, in time order."""
     if not 0 < overlap < 1:
         raise PrepError(f"overlap must be between 0 and 1, got {overlap}")
     if (focal_length_mm is None) != (sensor_width_mm is None):
@@ -260,6 +288,9 @@ def _plan(
             # One focal length cannot describe two video modes: each crops the sensor differently.
             raise PrepError(f"{video.name}: frame size differs from the other clips; prepare them separately")
         scans.append(scan)
+    found, alignments = _align_clips(scans, nav_places(videos, nav))
+    # From here on a clip that fits a track runs on real time: its frame times, its telemetry and its start.
+    scans = [_on_real_time(scan, fit) if fit else scan for scan, fit in zip(scans, alignments, strict=True)]
 
     width, height = scans[0].width, scans[0].height
     used_mm = (focal_length_mm, sensor_width_mm) if focal_length_mm and sensor_width_mm else None
@@ -277,7 +308,7 @@ def _plan(
         }
     }
 
-    clips = [_read_clip(scan, camera_id, overlap) for scan in scans]
+    clips = [_read_clip(scan, camera_id, overlap, fit) for scan, fit in zip(scans, alignments, strict=True)]
     checks = run_checks(
         [(clip.scan, clip.kept) for clip in clips],
         [feature for clip in clips for feature in clip.features],
@@ -285,7 +316,47 @@ def _plan(
         overlap,
         given_focal_px,
     )
-    return clips, measured, cameras, checks
+    checks.append(_navigation_check([clip.result for clip in clips], found))
+    used = {fit.track.path: fit.track for fit in alignments if fit}
+    return clips, measured, cameras, checks, sorted(used.values(), key=lambda track: track.times[0])
+
+
+def _align_clips(scans: Sequence[ClipScan], places: Sequence[Path]) -> tuple[list[Track], list[Alignment | None]]:
+    """The tracks in ``places`` from the time of the clips, and for each clip its fit to the finest track it fits."""
+    starts = [datetime.fromisoformat(scan.created).timestamp() if scan.created else None for scan in scans]
+    spans = [(start, start + scan.times[-1]) for scan, start in zip(scans, starts, strict=True) if start is not None]
+    if not spans:
+        return [], [None] * len(scans)
+    tracks = find_tracks(places, min(span[0] for span in spans) - MARGIN_S, max(span[1] for span in spans) + MARGIN_S)
+    fits: list[Alignment | None] = []
+    for scan, start in zip(scans, starts, strict=True):
+        candidates = (align(scan.entries, start, track) for track in tracks) if start is not None else ()
+        fits.append(next((fit for fit in candidates if fit), None))
+    return tracks, fits
+
+
+def _on_real_time(scan: ClipScan, fit: Alignment) -> ClipScan:
+    """``scan`` with its frame times and telemetry in real seconds, starting when the track says the clip began."""
+    assert scan.created is not None
+    created = datetime.fromisoformat(scan.created) + timedelta(seconds=fit.offset_s)
+    entries = [
+        replace(entry, start_s=entry.start_s * fit.scale, end_s=entry.end_s * fit.scale) for entry in scan.entries
+    ]
+    return replace(scan, times=[time * fit.scale for time in scan.times], entries=entries, created=created.isoformat())
+
+
+def _navigation_check(clips: Sequence[ClipResult], tracks: Sequence[Track]) -> Check:
+    """Where the positions are from: warns when a flight log was there and a clip, or some frames, did not fit it."""
+    if not tracks:
+        return Check("navigation", Level.PASS, "no flight log found: positions from the video telemetry")
+    missed = [clip.name for clip in clips if clip.nav == VIDEO_NAV]
+    if missed:
+        return Check("navigation", Level.WARN, f"no flight log fits {', '.join(missed)}: video telemetry used")
+    frames, on_track = sum(clip.kept for clip in clips), sum(clip.nav_frames for clip in clips)
+    sources = ", ".join(dict.fromkeys(clip.nav for clip in clips))
+    scales = sorted({round(clip.time_scale, 2) for clip in clips})
+    message = f"{on_track} of {frames} frames on {sources}; video runs at {', '.join(map(str, scales))} of real time"
+    return Check("navigation", Level.WARN if on_track < frames else Level.PASS, message)
 
 
 def _camera_of(scans: Sequence[ClipScan], given_focal_px: float | None) -> Camera:
@@ -299,8 +370,8 @@ def _camera_of(scans: Sequence[ClipScan], given_focal_px: float | None) -> Camer
         return Camera(scans[0].width, scans[0].height, given_focal_px, float(np.median(heights)), 0, None)
 
 
-def _read_clip(scan: ClipScan, camera_id: str, overlap: float) -> _Clip:
-    """Choose the frames of one video and make their features."""
+def _read_clip(scan: ClipScan, camera_id: str, overlap: float, fit: Alignment | None = None) -> _Clip:
+    """Choose the frames of one video and make their features, from the track of ``fit`` where it has points."""
     entries = scan.entries
     moments = [entry.start_s for entry in entries]
     video = scan.video
@@ -315,6 +386,7 @@ def _read_clip(scan: ClipScan, camera_id: str, overlap: float) -> _Clip:
     start = datetime.fromisoformat(scan.created) if scan.created else None
 
     features: list[Json] = []
+    on_track = 0
     for index in kept:
         frame = scan.samples[index].frame
         time = scan.times[frame]
@@ -328,7 +400,13 @@ def _read_clip(scan: ClipScan, camera_id: str, overlap: float) -> _Clip:
             taken = (start + timedelta(seconds=time)).isoformat(timespec="milliseconds")
             properties["time_utc"] = taken.replace("+00:00", "Z")
         geometry: Json | None = None
-        if fixes:
+        if fit and start is not None and fit.track.covers(moment := start.timestamp() + time):
+            values = fit.track.at(moment)
+            geometry = {"type": "Point", "coordinates": [values.pop("lon"), values.pop("lat"), values.pop("height")]}
+            properties |= values  # gimbal yaw, pitch, roll; speeds; aircraft attitude; satellites
+            properties["nav_source"] = fit.track.path.name
+            on_track += 1
+        elif fixes:
             height = at(moments, [entry.fields["rel_alt"] for entry in entries], time)
             lon, lat = at(fix_moments, lons, time), at(fix_moments, lats, time)
             geometry = {"type": "Point", "coordinates": [round(lon, 9), round(lat, 9), round(height, 3)]}
@@ -337,6 +415,10 @@ def _read_clip(scan: ClipScan, camera_id: str, overlap: float) -> _Clip:
     flown = _integrate(moments, [entry.fields["speed_ms"] for entry in entries])
     featureless = sum(sample.texture < MIN_TEXTURE for sample in scan.samples) * scan.sample_interval_s
     result = ClipResult(video.name, scan.times[-1], flown[-1], len(scan.times), len(kept), featureless)
+    if fit:
+        result = replace(
+            result, nav=fit.track.path.name, time_scale=fit.scale, clock_offset_s=fit.offset_s, nav_frames=on_track
+        )
     return _Clip(scan, kept, features, result)
 
 

@@ -13,7 +13,7 @@ from navlign.images import AltitudeMode, PrepError, PrepResult, Shutter, Vertica
 from navlign.metadata import output_paths, read_metadata, write_metadata
 from navlign.report import print_metadata
 from navlign.scan import scan_clip
-from navlign.survey import ClipResult, check_survey, list_videos, prepare_survey
+from navlign.survey import VIDEO_NAV, ClipResult, check_survey, list_videos, prepare_survey
 from navlign.video import prepare_video
 
 app = typer.Typer(no_args_is_help=True, add_completion=False)
@@ -149,6 +149,10 @@ def survey(
         list[Path] | None,
         typer.Option(exists=True, dir_okay=False, help="Licence or credits file to copy along; repeatable."),
     ] = None,
+    nav: Annotated[
+        list[Path] | None,
+        typer.Option(exists=True, help="Flight log or mission folder; default: next to the videos and NAVLIGN_NAV."),
+    ] = None,
     overwrite: Annotated[bool, typer.Option(help="Replace an existing manifest and images directory.")] = False,
 ) -> None:
     """Prepare a dataset from the video clips of a survey: pick the frames, measure the camera, check the result."""
@@ -162,12 +166,15 @@ def survey(
             shutter=shutter,
             attribution=attribution or (),
             overwrite=overwrite,
+            nav=nav,
         )
     except PrepError as error:
         console.print(f"[red]error:[/red] {error}")
         raise typer.Exit(1) from error
     _print_clips(result.clips)
     _report(result)
+    if result.trajectory_path:
+        console.print(f"trajectory  {result.trajectory_path}")
     gigabytes = result.image_bytes / 1e9, result.video_bytes / 1e9
     console.print(f"{gigabytes[0]:.2f} GB of images from {gigabytes[1]:.2f} GB of video")
     _print_checks(result.checks)
@@ -187,11 +194,15 @@ def check(
     overlap: Annotated[
         float, typer.Option(min=0.01, max=0.99, help="Share of a frame the next one still shows, on the pixels.")
     ] = 0.85,
+    nav: Annotated[
+        list[Path] | None,
+        typer.Option(exists=True, help="Flight log or mission folder; default: next to the videos and NAVLIGN_NAV."),
+    ] = None,
 ) -> None:
     """Say what survey would keep and whether to trust it, writing nothing. Exits 1 if the data will not do."""
     try:
         result = check_survey(
-            sources, focal_length_mm=focal_length_mm, sensor_width_mm=sensor_width_mm, overlap=overlap
+            sources, focal_length_mm=focal_length_mm, sensor_width_mm=sensor_width_mm, overlap=overlap, nav=nav
         )
     except PrepError as error:
         console.print(f"[red]error:[/red] {error}")
@@ -270,8 +281,8 @@ def _print_camera(measured: Camera) -> None:
 def _print_clips(clips: list[ClipResult]) -> None:
     """Print what came out of each clip."""
     table = Table(box=None)
-    for heading in ("clip", "length", "flown", "frames", "kept", "no texture"):
-        table.add_column(heading, justify="left" if heading == "clip" else "right")
+    for heading in ("clip", "length", "flown", "frames", "kept", "no texture", "navigation"):
+        table.add_column(heading, justify="left" if heading in ("clip", "navigation") else "right")
     for clip in clips:
         table.add_row(
             clip.name,
@@ -280,6 +291,7 @@ def _print_clips(clips: list[ClipResult]) -> None:
             str(clip.frames),
             str(clip.kept),
             f"{clip.featureless_s:.0f} s",
+            clip.nav if clip.nav == VIDEO_NAV else f"{clip.nav}, x{clip.time_scale:.3f} {clip.clock_offset_s:+.2f} s",
         )
     console.print(table)
 
