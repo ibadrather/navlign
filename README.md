@@ -85,6 +85,7 @@ length of the footage, plus as much again to write the frames.
 |---|---|---|
 | `--overlap F` | `0.85` | Share of a frame the next one still shows, measured on the pixels |
 | `--focal-length-mm MM` `--sensor-width-mm MM` | measured | A camera to use instead; `check` compares it with the footage |
+| `--nav PATH` | next to the videos, then `NAVLIGN_NAV` | Flight logs or Swathwise mission folders to take the navigation from; repeatable |
 | `--shutter`, `--attribution`, `--overwrite` | | As for images |
 
 `navlign.prepare_survey(...)` in `survey.py`, `check_survey(...)` next to it. No video is copied: the output
@@ -93,12 +94,48 @@ is an image dataset, so the pipeline needs nothing else.
 ```
 dataset_dir/
   manifest.geojson
-  images/            # DJI_0153_000437.jpg: clip and frame number
-  prep_report.json   # verdict, each check, each clip, the camera
-  LICENSE ...        # --attribution files
+  images/             # DJI_0153_000437.jpg: clip and frame number
+  trajectory.geojson  # every point of the flight logs used; only when one was found
+  prep_report.json    # verdict, each check, each clip, the camera
+  LICENSE ...         # --attribution files
 ```
 
-Only the video and its telemetry go in; no mission plan or flight log is read.
+#### Navigation
+
+The telemetry inside a Mini 4K clip is one line a second with the position rounded to 4 decimals, about 11 m, and no
+attitude. The flight log of DJI Fly has ten frames a second with the position as logged, the speeds and the attitude
+of the aircraft and the gimbal, and [Swathwise](https://github.com/ibadrather/swathwise) keeps it in the mission folder.
+`survey` looks for these files, all the way down the folders of the videos, of `--nav` and of the `NAVLIGN_NAV`
+environment variable (several folders separated like `PATH`), so pointing that at Swathwise's `data/missions` once is
+enough:
+
+| File | |
+|---|---|
+| `frames-N.csv`, `FlightRecord_*.csv` | the flight log as `dji-log --csv` writes it, about 10 Hz |
+| `flown-N_high_res.geojson` | the same frames as GeoJSON; read when there is no `frames-N.csv` next to it |
+| `flown-N.geojson` | the fixes Swathwise received live: one every 1.3 s, 7 decimals, no gimbal attitude |
+
+Only files with points from the time of the clips are read. Each clip takes the finest one it fits, and falls back to
+its own telemetry when it fits none (`nav.py`):
+
+- **The fit.** A clip does not say exactly when it began: `creation_time` is in whole seconds and 1 to 3.5 s early on
+  the Mini 4K. And a second of video is not always a second: its 24 fps mode runs at 0.8 of real time. So each clip is
+  fitted as `time = creation_time + offset + scale * video seconds`, roughly by position, then by the speed profile
+  (the `H.S` of the video against the speed of the log), which agree to 0.9996 and better on the surveys of 2026-11-01.
+  A fit is refused when the positions end up more than 10 m apart (rms) or the speeds less than 0.9 alike.
+- **What a frame gets**, interpolated between the two log frames around its time: `geometry` (height above take-off),
+  the gimbal's `yaw`, `pitch`, `roll`, and beside the contract `speed_north_ms`, `speed_east_ms`, `speed_down_ms`,
+  `aircraft_yaw`, `aircraft_pitch`, `aircraft_roll`, `satellites` and `nav_source`, the file it is from. `time_utc` is
+  the fitted time. A frame in a hole of the log (over 2 s) keeps the position of the video telemetry and has no
+  `nav_source`.
+- **The clip runs on real time from there on**, so the camera, the distance flown and the motion blur are right for
+  24 fps clips as well: without a log their focal length comes out 20 % short.
+- **`trajectory.geojson`** is the whole of the logs used, a Point per log frame `[lon, lat, height]` with `time_utc`,
+  the same properties as above, `recording` and `source`, within the times of `mission.json` when there is one. It is
+  for showing or using the full flight; the pipeline does not need it. The manifest names it under
+  `photogrammetry.navigation`.
+- `prep_report.json` gives each clip its `nav`, `time_scale`, `clock_offset_s` and `nav_frames`, and the `navigation`
+  check warns when a log was there and a clip did not fit it.
 
 #### Picking frames
 
@@ -154,6 +191,7 @@ Each is a number against a threshold, written to `prep_report.json`. The verdict
 | `telemetry` | Digital zoom was used, frames have no position, or under 10 satellites |
 | `featureless` | Never: how much of the footage had nothing to map |
 | `camera` | A camera passed in is over 10 % from the footage, or the footage could not confirm it |
+| `navigation` | A flight log was found and a clip, or some of its frames, did not fit it |
 
 #### What the Mini 4K footage taught
 
@@ -176,6 +214,39 @@ From nine 2.7K and two 4K clips of 2026-10-30 and 2026-10-31:
 - **Water can lie.** Tracks over a lake gave a focal length 25 % too short: reflections of trees sit below the ground.
 - **Decoding only keyframes is no shortcut**, about 1.5 times faster and on the noisiest frames, and `-hwaccel` was
   slower than software on this machine.
+
+### Inspect
+
+To see all a video carries, and keep it:
+
+```
+navlign inspect <video> [-o <dir>] [--srt FILE] [--rows N] [--overwrite]
+```
+
+It prints the container, its tags, the MP4 user data, the streams, the frames and the telemetry, and writes two files
+next to the video (or to `-o`) that share their timestamps:
+
+```
+DJI_0173.nav.geojson   # a point per telemetry entry: position, height, speeds, satellites, home distance, raw line;
+                       # navigation.at_start: aircraft and gimbal attitude and speed when the recording started
+DJI_0173.camera.json   # exposure per telemetry entry; container, streams, device, user data; a row per frame
+```
+
+Each telemetry entry has `index`, `start_s`, `end_s` (seconds of video) and `time_utc` in both files; each frame
+names its `entry`, and each point its `first_frame` and `last_frame`. `time_utc` is the container `creation_time`
+plus the seconds of video: DJI writes the start of the recording there in UTC (on the Mini 4K it is the file's
+creation time to the second). Nothing is decoded, so a 2 GB clip takes about two seconds. `--rows` prints that many
+entries from the start and the end, `0` all of them. `navlign.read_metadata(...)` and `write_metadata(...)` in
+`metadata.py`.
+
+What a Mini 4K clip holds, beyond the once-a-second telemetry line:
+
+- `moov/udta` (`boxes.py`): `©fpt` `©fyw` `©frl` aircraft pitch, yaw, roll and `©gpt` `©gyw` `©grl` gimbal pitch, yaw,
+  roll at the start of the recording, `©xsp` `©ysp` `©zsp` speeds, `©xyz` location, `©mdl` camera model (`FC7703`),
+  `©csn` serial number, `©res` video mode, `Xtra` version strings. Atoms whose layout is not known are kept as hex.
+- the `DJI.Meta` data stream: on this drone every packet is the same 250 bytes of filler. Newer DJI models write
+  attitude there; that format is not decoded, and `inspect` says when a data stream holds more than filler.
+- no attitude and no IMU per entry or per frame.
 
 ## What is read
 
@@ -203,10 +274,10 @@ measure the camera and the blur, `DZOOM` and the satellite count go to the check
 
 | Manifest | From |
 |---|---|
-| `geometry` `[lon, lat, alt]` | `GPS (lon, lat, satellites)`, averaged over ±5 s to undo its rounding, between entries linear; `H` as a height above take-off. 0/0 counts as no fix |
-| `time_utc` | MP4 `creation_time` (UTC, whole seconds) + the frame's presentation time |
+| `geometry` `[lon, lat, alt]` | The flight log when one fits ([navigation](#navigation)). Else `GPS (lon, lat, satellites)`, averaged over ±5 s to undo its rounding, between entries linear; `H` as a height above take-off. 0/0 counts as no fix |
+| `time_utc` | MP4 `creation_time` (UTC, whole seconds) + the frame's presentation time, both corrected by the fit to the flight log when there is one |
 | `cameras` | Measured from the footage, or `--focal-length-mm`, `--sensor-width-mm`; ffprobe frame size. Clips of different sizes are refused |
-| `yaw`, `pitch`, `roll` | not written: this telemetry has none |
+| `yaw`, `pitch`, `roll` | The gimbal's, from the flight log; not written without one: this telemetry has none |
 
 Notes:
 
@@ -232,7 +303,7 @@ Notes:
 - Interpolating positions between SRT entries in `video` (`survey` does); digital zoom (`dzoom_ratio`).
 - Dropping frames across clips that fly the same ground twice; heights across separate take-offs; telling a tilted
   gimbal from a nadir one, which the telemetry does not record.
-- GPX / flight logs, lever arm and boresight corrections, accuracy conversion (CEP / 2-sigma → 1-sigma).
+- Flight logs in `images` and `video`; GPX; lever arm and boresight corrections; accuracy conversion (CEP / 2-sigma → 1-sigma).
 
 ## Test data
 

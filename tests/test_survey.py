@@ -1,6 +1,8 @@
 import json
 import shutil
 import subprocess
+from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -8,9 +10,11 @@ import numpy as np
 import pytest
 from numpy.typing import NDArray
 from PIL import Image
+from typer.testing import CliRunner
 
 from navlign import Level, PrepError, check_survey, prepare_survey, prepare_video, scan_clip
 from navlign.camera import MIN_PAIRS, measure_camera
+from navlign.cli import app
 from navlign.scan import MIN_TEXTURE, Sample, overlap_of, overlaps_between
 from navlign.survey import _integrate, _smooth, choose_frames
 
@@ -333,6 +337,81 @@ def test_position_height_and_time_of_a_frame(tmp_path: Path) -> None:
     assert feature["properties"]["video"] == "DJI_0001.MP4"
     frame = feature["properties"]["video_frame"]
     assert feature["properties"]["time_utc"] == f"2026-10-30T13:20:0{6 + frame // FPS}.{frame % FPS}00Z"
+
+
+@needs_ffmpeg
+def test_a_flight_log_next_to_the_clips_gives_position_attitude_and_time(
+    tmp_path: Path, make_log: Callable[..., Path]
+) -> None:
+    speeds = [0.0, 1, 2, 3, 3, 2, 1, 0, 0, 1, 2, 3, 3, 3, 2, 1, 2, 3, 1, 0]  # of the clip, one a second
+    clip = make_clip(tmp_path / "raw" / "DJI_0001.MP4", speeds)
+    # An .SRT next to the clip is read first: the same line with the position moving east, rounded to 4 decimals.
+    flown = np.concatenate([[0.0], np.cumsum(speeds)])
+    blocks = [
+        f"{n + 1}\n00:00:{n:02d},000 --> 00:00:{n + 1:02d},000\n"
+        + LINE.format(lon=round(8.8354 + flown[n] / 66_717, 4), lat=53.1084, height=HEIGHT_M, speed=speed, zoom=1)
+        for n, speed in enumerate(speeds)
+    ]
+    clip.with_suffix(".SRT").write_text("\n\n".join(blocks) + "\n")
+    # The log began 20 s before the clip was created, and the clip itself 1.5 s after that.
+    created = datetime(2026, 10, 30, 13, 20, 6, tzinfo=UTC).timestamp()
+    seconds = np.arange(0, 60, 0.1) - 21.5
+    logged = np.interp(seconds, np.arange(len(speeds)), speeds, left=0.0, right=0.0)
+    make_log(tmp_path / "raw" / "mission" / "frames-1.csv", datetime.fromtimestamp(created - 20, UTC), logged)
+    dataset = tmp_path / "dataset"
+
+    result = prepare_survey([clip], dataset, overlap=0.9, **CAMERA)
+
+    assert result.clips[0].nav == "frames-1.csv"
+    assert result.clips[0].time_scale == pytest.approx(1.0, abs=0.01)
+    assert result.clips[0].clock_offset_s == pytest.approx(1.5, abs=0.2)
+    assert result.clips[0].nav_frames == result.frames
+    manifest = load(dataset)
+    assert manifest["photogrammetry"]["navigation"] == {"sources": ["frames-1.csv"], "trajectory": "trajectory.geojson"}
+    last = manifest["features"][-1]
+    assert last["properties"]["nav_source"] == "frames-1.csv"
+    assert (last["properties"]["yaw"], last["properties"]["pitch"], last["properties"]["roll"]) == (90.5, -90.0, 0.0)
+    assert last["properties"]["aircraft_yaw"] == pytest.approx(92.0)
+    # The log starts at 8.8354 and the clip is flown east of there: 4 decimals could not say how far.
+    flown_m = (last["geometry"]["coordinates"][0] - 8.8354) * 111_195 * 0.6
+    assert flown_m == pytest.approx(logged[: 215 + last["properties"]["video_frame"]].sum() / 10, abs=1.0)
+    assert last["geometry"]["coordinates"][2] == pytest.approx(10.0)
+    taken = datetime.fromisoformat(last["properties"]["time_utc"]).timestamp()
+    assert taken == pytest.approx(created + 1.5 + last["properties"]["video_frame"] / FPS, abs=0.2)
+    trajectory = json.loads((dataset / "trajectory.geojson").read_text())
+    assert len(trajectory["features"]) == 600
+    assert result.trajectory_path == dataset / "trajectory.geojson"
+    assert {check.name: check.level for check in result.checks}["navigation"] is Level.PASS
+    assert result.nav_found == result.nav_used == [(tmp_path / "raw" / "mission" / "frames-1.csv").resolve()]
+
+    # Without --nav the command finds the log under the video folder and names it before and after the run.
+    output = (
+        CliRunner()
+        .invoke(
+            app,
+            ["check", str(clip.parent), "--overlap", "0.9", "--focal-length-mm", "5.785", "--sensor-width-mm", "6.17"],
+            env={"COLUMNS": "200"},
+        )
+        .output
+    )
+    navigation, summary = output.split("╭─ navigation")[1], output.split("╭─ check")[1]
+    assert "the video folder" in navigation and "and its subfolders" in navigation
+    assert "mission/frames-1.csv" in navigation and "flight log, ~10 Hz" in navigation
+    assert "mission/frames-1.csv" in summary and "1 of 1 clips" in summary and "verdict" in summary
+
+
+@needs_ffmpeg
+def test_without_a_flight_log_nothing_changes(tmp_path: Path) -> None:
+    clip = make_clip(tmp_path / "raw" / "DJI_0001.MP4", [2.0] * 3)
+
+    result = prepare_survey([clip], tmp_path / "dataset", overlap=0.9, **CAMERA)
+
+    manifest = load(tmp_path / "dataset")
+    assert "navigation" not in manifest["photogrammetry"]
+    assert set(manifest["features"][0]["properties"]) == {"image", "camera", "video", "video_frame", "time_utc"}
+    assert not (tmp_path / "dataset" / "trajectory.geojson").exists()
+    assert result.clips[0].nav == "video telemetry"
+    assert result.nav_found == result.nav_used == []
 
 
 @needs_ffmpeg
